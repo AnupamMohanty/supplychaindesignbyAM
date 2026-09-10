@@ -2,11 +2,32 @@
 Core greenfield network optimization logic.
 Kept separate from the Streamlit UI so it can be tested or reused (e.g. in a
 FastAPI backend later) without dragging in UI code.
+
+Internal demand metric is generic "demand_value" — it can represent orders,
+quantity, weight, or volume depending on how the Products table defines the
+unit of measure for a given product. The optimizer itself is unit-agnostic:
+it just sums and compares demand_value, so whatever unit the business cares
+about flows straight through.
 """
 
 import numpy as np
 import pandas as pd
 import geopandas as gpd
+
+
+# ---------------------------------------------------------------------------
+# Candidate generation
+# ---------------------------------------------------------------------------
+
+def auto_grid_step_deg(service_radius_km: float, fraction: float = 0.35,
+                        min_deg: float = 0.005, max_deg: float = 0.1) -> float:
+    """Pick a sensible candidate-grid spacing automatically from the service
+    radius, so this no longer needs to be a user-facing control. Roughly
+    1/3 of the service radius is fine enough to find good sites without
+    generating far more candidates than the radius could ever distinguish
+    between."""
+    step = (service_radius_km / 111.0) * fraction
+    return float(np.clip(step, min_deg, max_deg))
 
 
 def generate_candidate_sites(demand_df: pd.DataFrame, grid_step_deg: float = 0.03,
@@ -43,51 +64,67 @@ def estimate_utm_epsg(lon: float, lat: float) -> int:
     return (32600 if lat >= 0 else 32700) + zone
 
 
-def score_candidates(demand_df: pd.DataFrame, cand_df: pd.DataFrame,
-                      service_radius_km: float = 8.0,
-                      coverage_weight: float = 0.7) -> pd.DataFrame:
-    """Score each candidate site on demand coverage vs. cost, using proper
-    geodesic distance (reprojected to a local UTM zone, not raw lat/lon degrees)."""
-    demand_gdf = gpd.GeoDataFrame(
-        demand_df, geometry=gpd.points_from_xy(demand_df.lon, demand_df.lat), crs="EPSG:4326"
-    )
-    cand_gdf = gpd.GeoDataFrame(
-        cand_df, geometry=gpd.points_from_xy(cand_df.lon, cand_df.lat), crs="EPSG:4326"
-    )
+# ---------------------------------------------------------------------------
+# Geocoding — for users who only have city/country, not lat/lon
+# ---------------------------------------------------------------------------
 
-    epsg = estimate_utm_epsg(demand_df["lon"].mean(), demand_df["lat"].mean())
-    demand_m = demand_gdf.to_crs(epsg=epsg)
-    cand_m = cand_gdf.to_crs(epsg=epsg)
+def needs_geocoding(df: pd.DataFrame) -> bool:
+    """True if any row is missing lat or lon."""
+    if df is None or len(df) == 0:
+        return False
+    if "lat" not in df.columns or "lon" not in df.columns:
+        return True
+    return df["lat"].isnull().any() or df["lon"].isnull().any()
 
-    results = []
-    for _, site in cand_m.iterrows():
-        dists = demand_m.geometry.distance(site.geometry) / 1000
-        within = dists <= service_radius_km
-        covered_orders = demand_df.loc[within.values, "daily_orders"].sum()
-        results.append({
-            "site_id": site["site_id"],
-            "covered_demand_points": int(within.sum()),
-            "covered_daily_orders": covered_orders,
-            "avg_dist_to_covered_km": round(dists[within].mean(), 2) if within.sum() > 0 else 0,
-        })
 
-    score_df = pd.DataFrame(results).merge(cand_df, on="site_id")
+def geocode_locations(df: pd.DataFrame, city_col: str = "city", country_col: str = "country",
+                       lat_col: str = "lat", lon_col: str = "lon") -> tuple[pd.DataFrame, list]:
+    """Fill in missing lat/lon by geocoding city + country with OpenStreetMap's
+    Nominatim service (free, no API key, rate-limited to be a polite citizen
+    of a shared public service). Returns the updated dataframe and a list of
+    row indices that could not be geocoded."""
+    from geopy.geocoders import Nominatim
+    from geopy.extra.rate_limiter import RateLimiter
 
-    max_orders = score_df["covered_daily_orders"].max()
-    score_df["coverage_norm"] = score_df["covered_daily_orders"] / max_orders if max_orders > 0 else 0
+    df = df.copy()
+    if lat_col not in df.columns:
+        df[lat_col] = np.nan
+    if lon_col not in df.columns:
+        df[lon_col] = np.nan
 
-    cost_range = score_df["monthly_lease_cost"].max() - score_df["monthly_lease_cost"].min()
-    if cost_range > 0:
-        score_df["cost_norm"] = 1 - (score_df["monthly_lease_cost"] - score_df["monthly_lease_cost"].min()) / cost_range
-    else:
-        score_df["cost_norm"] = 1.0
+    geolocator = Nominatim(user_agent="supply_chain_design_by_am")
+    geocode = RateLimiter(geolocator.geocode, min_delay_seconds=1, max_retries=1)
 
-    score_df["feasibility_score"] = (
-        coverage_weight * score_df["coverage_norm"] + (1 - coverage_weight) * score_df["cost_norm"]
-    )
+    failed_rows = []
+    for idx, row in df.iterrows():
+        lat_missing = pd.isna(row.get(lat_col))
+        lon_missing = pd.isna(row.get(lon_col))
+        if not (lat_missing or lon_missing):
+            continue
 
-    return score_df.sort_values("feasibility_score", ascending=False).reset_index(drop=True)
+        city = str(row.get(city_col, "") or "").strip()
+        country = str(row.get(country_col, "") or "").strip()
+        query = ", ".join(part for part in [city, country] if part)
+        if not query:
+            failed_rows.append(idx)
+            continue
 
+        try:
+            location = geocode(query)
+            if location:
+                df.at[idx, lat_col] = location.latitude
+                df.at[idx, lon_col] = location.longitude
+            else:
+                failed_rows.append(idx)
+        except Exception:
+            failed_rows.append(idx)
+
+    return df, failed_rows
+
+
+# ---------------------------------------------------------------------------
+# Coverage math
+# ---------------------------------------------------------------------------
 
 def _xy_meters(df: pd.DataFrame, epsg: int) -> np.ndarray:
     """Project lat/lon points to (x, y) meters in a local UTM zone."""
@@ -120,7 +157,8 @@ def greedy_select_sites(demand_df: pd.DataFrame, cand_df: pd.DataFrame,
     """
     Greedy maximal-coverage facility location: iteratively picks the candidate
     site that covers the most currently-uncovered demand, accounting for
-    demand already covered by existing facilities.
+    demand already covered by existing facilities (pass existing_df=None or
+    an empty dataframe to run a pure greenfield analysis with no baseline).
 
     mode="num_sites": open exactly `num_sites` new sites, maximize coverage.
     mode="service_target": open as many sites as needed (up to `max_sites`)
@@ -133,13 +171,13 @@ def greedy_select_sites(demand_df: pd.DataFrame, cand_df: pd.DataFrame,
     all claim to cover.
     """
     epsg = estimate_utm_epsg(demand_df["lon"].mean(), demand_df["lat"].mean())
-    orders = demand_df["daily_orders"].values
-    total_orders = orders.sum()
+    demand_vals = demand_df["demand_value"].values
+    total_demand = demand_vals.sum()
     n_demand = len(demand_df)
 
     existing_cov = compute_coverage_matrix(existing_df, demand_df, service_radius_km, epsg)
     covered = existing_cov.any(axis=0) if len(existing_cov) > 0 else np.zeros(n_demand, dtype=bool)
-    baseline_covered_orders = orders[covered].sum()
+    baseline_covered_demand = demand_vals[covered].sum()
 
     cand_cov = compute_coverage_matrix(cand_df, demand_df, service_radius_km, epsg)
 
@@ -152,7 +190,7 @@ def greedy_select_sites(demand_df: pd.DataFrame, cand_df: pd.DataFrame,
         best_gain, best_i = -1.0, None
         for i in remaining_idx:
             new_covered = covered | cand_cov[i]
-            gain = orders[new_covered].sum() - orders[covered].sum()
+            gain = demand_vals[new_covered].sum() - demand_vals[covered].sum()
             if gain > best_gain:
                 best_gain, best_i = gain, i
 
@@ -160,11 +198,11 @@ def greedy_select_sites(demand_df: pd.DataFrame, cand_df: pd.DataFrame,
             break  # no remaining candidate adds any new coverage
 
         covered = covered | cand_cov[best_i]
-        cum_covered_orders = orders[covered].sum()
+        cum_covered_demand = demand_vals[covered].sum()
         row = cand_df.iloc[best_i].to_dict()
-        row["incremental_orders_covered"] = round(best_gain, 1)
-        row["cumulative_covered_orders"] = round(cum_covered_orders, 1)
-        row["cumulative_coverage_pct"] = round(cum_covered_orders / total_orders * 100, 1) if total_orders > 0 else 0
+        row["incremental_demand_covered"] = round(best_gain, 1)
+        row["cumulative_covered_demand"] = round(cum_covered_demand, 1)
+        row["cumulative_coverage_pct"] = round(cum_covered_demand / total_demand * 100, 1) if total_demand > 0 else 0
         selected_rows.append(row)
         selected_idx.append(best_i)
         remaining_idx.remove(best_i)
@@ -173,58 +211,72 @@ def greedy_select_sites(demand_df: pd.DataFrame, cand_df: pd.DataFrame,
             break
 
     selected_df = pd.DataFrame(selected_rows)
-    final_covered_orders = orders[covered].sum()
+    final_covered_demand = demand_vals[covered].sum()
     summary = {
-        "total_daily_orders": round(total_orders, 1),
-        "baseline_covered_orders": round(baseline_covered_orders, 1),
-        "baseline_coverage_pct": round(baseline_covered_orders / total_orders * 100, 1) if total_orders > 0 else 0,
-        "final_covered_orders": round(final_covered_orders, 1),
-        "final_coverage_pct": round(final_covered_orders / total_orders * 100, 1) if total_orders > 0 else 0,
+        "total_demand": round(total_demand, 1),
+        "baseline_covered_demand": round(baseline_covered_demand, 1),
+        "baseline_coverage_pct": round(baseline_covered_demand / total_demand * 100, 1) if total_demand > 0 else 0,
+        "final_covered_demand": round(final_covered_demand, 1),
+        "final_coverage_pct": round(final_covered_demand / total_demand * 100, 1) if total_demand > 0 else 0,
         "sites_selected": len(selected_idx),
         "target_met": (mode == "service_target" and
-                        (final_covered_orders / total_orders * 100 if total_orders > 0 else 0) >= target_pct),
+                        (final_covered_demand / total_demand * 100 if total_demand > 0 else 0) >= target_pct),
     }
     return selected_df, summary
+
+
+# ---------------------------------------------------------------------------
+# Validation
+# ---------------------------------------------------------------------------
+
+def validate_demand_df(df: pd.DataFrame) -> tuple[bool, str]:
+    """Business-data validation — does NOT require lat/lon (those can come
+    from geocoding). Call coordinates_ready() separately before running."""
+    if df is None or len(df) == 0:
+        return False, "Customer Demand table is empty — add at least one row."
+    required_cols = {"city", "country", "product_id", "demand_value"}
+    missing = required_cols - set(df.columns)
+    if missing:
+        return False, f"Missing required columns: {', '.join(sorted(missing))}"
+    if df[["city", "country", "product_id", "demand_value"]].isnull().any().any():
+        return False, "Found empty values in city, country, product_id, or demand_value — every row needs all four."
+    if (df["demand_value"] < 0).any():
+        return False, "demand_value cannot be negative."
+    return True, ""
+
+
+def validate_products_df(df: pd.DataFrame) -> tuple[bool, str]:
+    if df is None or len(df) == 0:
+        return False, "Products table is empty — add at least one product."
+    required_cols = {"product_id", "product_name", "unit_of_measure"}
+    missing = required_cols - set(df.columns)
+    if missing:
+        return False, f"Products table missing columns: {', '.join(sorted(missing))}"
+    if df[["product_id", "product_name", "unit_of_measure"]].isnull().any().any():
+        return False, "Found empty values in product_id, product_name, or unit_of_measure."
+    return True, ""
 
 
 def validate_existing_df(df: pd.DataFrame) -> tuple[bool, str]:
     """Existing facilities table is optional — empty is valid."""
     if df is None or len(df) == 0:
         return True, ""
-    required_cols = {"facility_id", "lat", "lon"}
+    required_cols = {"facility_id", "city", "country"}
     missing = required_cols - set(df.columns)
     if missing:
         return False, f"Existing facilities table missing columns: {', '.join(sorted(missing))}"
-    if df[["lat", "lon"]].isnull().any().any():
-        return False, "Existing facilities table has empty lat/lon values."
-    if not df["lat"].between(-90, 90).all() or not df["lon"].between(-180, 180).all():
-        return False, "Existing facilities table has lat/lon values out of valid range."
     return True, ""
 
 
-def validate_products_df(df: pd.DataFrame) -> tuple[bool, str]:
-    """Products table is optional/reference-only for now — empty is valid."""
+def coordinates_ready(df: pd.DataFrame) -> tuple[bool, str]:
+    """Check a table has valid, complete lat/lon — call this after geocoding,
+    right before the table is used in the optimizer."""
     if df is None or len(df) == 0:
-        return True, ""
-    required_cols = {"product_id", "product_name"}
-    missing = required_cols - set(df.columns)
-    if missing:
-        return False, f"Products table missing columns: {', '.join(sorted(missing))}"
-    return True, ""
-
-
-def validate_demand_df(df: pd.DataFrame) -> tuple[bool, str]:
-    """Check an uploaded demand CSV has the columns and value ranges we need."""
-    required_cols = {"lat", "lon", "daily_orders"}
-    missing = required_cols - set(df.columns)
-    if missing:
-        return False, f"Missing required columns: {', '.join(sorted(missing))}"
-    if df[["lat", "lon", "daily_orders"]].isnull().any().any():
-        return False, "Found empty values in lat, lon, or daily_orders columns."
-    if not df["lat"].between(-90, 90).all():
-        return False, "Latitude values must be between -90 and 90."
-    if not df["lon"].between(-180, 180).all():
-        return False, "Longitude values must be between -180 and 180."
-    if (df["daily_orders"] < 0).any():
-        return False, "daily_orders cannot be negative."
+        return True, ""  # empty is a separate concern, handled elsewhere
+    if "lat" not in df.columns or "lon" not in df.columns:
+        return False, "No coordinates found — use 'Geocode missing locations' first."
+    if df["lat"].isnull().any() or df["lon"].isnull().any():
+        return False, "Some rows are missing coordinates — click 'Geocode missing locations' or fill lat/lon in manually."
+    if not df["lat"].between(-90, 90).all() or not df["lon"].between(-180, 180).all():
+        return False, "Latitude/longitude values are out of valid range."
     return True, ""
