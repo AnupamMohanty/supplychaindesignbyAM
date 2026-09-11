@@ -328,6 +328,99 @@ def lookup_reference_scores(dc_name: str) -> dict | None:
 
 
 
+DATA_SOURCES = [
+    {"region": "Ashburn / Loudoun County, VA", "criterion": "Warehouse Rental Cost",
+     "value": "~$20/SF/yr (range $16-32)", "source": "LoopNet, CityFeet",
+     "url": "https://www.loopnet.com/search/industrial-space/ashburn-va/for-lease/", "accessed": "Sep 2026"},
+    {"region": "National (US) benchmark", "criterion": "Warehouse Rental Cost",
+     "value": "$9.54/SF/yr NNN average", "source": "WarehousingCosts.com",
+     "url": "https://warehousingcosts.com/guides/warehouse-lease-rates", "accessed": "Jun 2026"},
+    {"region": "Ashburn / Loudoun County, VA", "criterion": "Airport / Highway Proximity",
+     "value": "Adjacent to Dulles Intl Airport; near I-95/Rte 28/Dulles Greenway",
+     "source": "IndustrialSpaces.net", "url": "https://industrialspaces.net/ashburn-va/warehouses-for-rent/",
+     "accessed": "Sep 2026"},
+    {"region": "Dallas-Fort Worth, TX", "criterion": "Warehouse Rental Cost",
+     "value": "~$9-12/SF/yr NNN average", "source": "JLL Research, CommercialCafe",
+     "url": "https://www.jll.com/en-us/insights/market-dynamics/dallas-fort-worth-industrial", "accessed": "Jul 2026"},
+    {"region": "Dallas-Fort Worth, TX", "criterion": "Logistics Infrastructure",
+     "value": "1.12B SF total industrial inventory; largest US market", "source": "LEE & Associates Dallas",
+     "url": "https://leedallas.com/news/dallas-commercial-real-estate-industrial-market-report-spring-2026/",
+     "accessed": "Apr 2026"},
+    {"region": "Dallas-Fort Worth, TX", "criterion": "Labor Availability / Cost",
+     "value": "Entry warehouse wage ~$17.30-18.50/hr", "source": "find3PLs.com",
+     "url": "https://find3pls.com/blog/dfw-warehousing-costs-2026", "accessed": "Sep 2026"},
+    {"region": "Columbus, OH", "criterion": "Warehouse Rental Cost",
+     "value": "~$10.45/SF/yr average", "source": "CommercialCafe, CityFeet",
+     "url": "https://www.commercialcafe.com/industrial/us/oh/columbus/", "accessed": "Aug 2026"},
+    {"region": "Columbus, OH", "criterion": "Highway / Airport Proximity",
+     "value": "I-70/I-71 junction; Rickenbacker Intl (dedicated air-cargo hub)",
+     "source": "CityFeet, Columbus Warehouse Space", "url": "https://www.cityfeet.com/cont/columbus-oh/industrial-space-for-lease",
+     "accessed": "Sep 2026"},
+]
+
+
+def build_data_sources_workbook() -> bytes:
+    """Build an in-memory Excel workbook listing every external data source
+    this app's reference scores are drawn from, so 'where did this number
+    come from' is always one click away rather than buried in code comments."""
+    import io as _io
+    buf = _io.BytesIO()
+    sources_df = pd.DataFrame(DATA_SOURCES)
+    criteria_df = pd.DataFrame(DEFAULT_SCORING_CRITERIA)[["label", "default_weight"]]
+    criteria_df.columns = ["Criterion", "Default Weight (%)"]
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        sources_df.to_excel(writer, sheet_name="Data Sources", index=False)
+        criteria_df.to_excel(writer, sheet_name="Scoring Criteria", index=False)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+def suggest_best_next_location(dc_name: str, scores_row: pd.Series, weights: dict,
+                                cand_df: pd.DataFrame, selected_df: pd.DataFrame,
+                                service_radius_km: float) -> str:
+    """For a site scoring below the quality bar, produce a concrete,
+    data-grounded suggestion rather than a generic "consider alternatives":
+    names the weakest-scoring criterion, and — using the run's OWN computed
+    lease-cost proxy (real model output, not invented) — flags whether a
+    cheaper unselected candidate exists nearby, as a lease-cost angle worth
+    checking."""
+    criterion_labels = {c["key"]: c["label"] for c in DEFAULT_SCORING_CRITERIA}
+    crit_scores = {k: scores_row.get(k, 5) for k in weights if k in criterion_labels}
+    if not crit_scores:
+        return f"**{dc_name}**: not enough scoring data to generate a suggestion."
+    weakest_key = min(crit_scores, key=crit_scores.get)
+    weakest_label = criterion_labels.get(weakest_key, weakest_key)
+    weakest_val = crit_scores[weakest_key]
+
+    suggestion = (f"**{dc_name}** scores lowest on **{weakest_label}** ({weakest_val}/10). ")
+
+    if weakest_key == "warehouse_rental_cost" and cand_df is not None and len(cand_df) > 0 \
+            and selected_df is not None and "lat" in selected_df.columns:
+        this_site = selected_df[selected_df["dc_name"] == dc_name]
+        if len(this_site) > 0:
+            site_lat, site_lon = this_site.iloc[0]["lat"], this_site.iloc[0]["lon"]
+            this_cost = this_site.iloc[0].get("monthly_lease_cost", None)
+            nearby = cand_df.copy()
+            nearby["_dist_deg"] = np.sqrt((nearby["lat"] - site_lat) ** 2 + (nearby["lon"] - site_lon) ** 2)
+            nearby_radius_deg = (service_radius_km * 1.5) / 111.0
+            nearby = nearby[nearby["_dist_deg"] <= nearby_radius_deg]
+            if this_cost is not None and len(nearby) > 0 and nearby["monthly_lease_cost"].min() < this_cost:
+                cheaper = nearby.loc[nearby["monthly_lease_cost"].idxmin()]
+                savings_pct = (1 - cheaper["monthly_lease_cost"] / this_cost) * 100
+                suggestion += (f"A nearby unselected candidate site ({cheaper['site_id']}, "
+                               f"~{cheaper['dist_from_center_km']:.0f} km from cluster center) has an estimated "
+                               f"lease cost ~{savings_pct:.0f}% lower — worth evaluating as an alternative.")
+            else:
+                suggestion += "No nearby unselected candidate offers a meaningfully lower estimated lease cost in this run."
+        else:
+            suggestion += "Consider evaluating nearby alternate sites for better rental terms."
+    else:
+        suggestion += "Consider evaluating alternate nearby candidates or offsetting with a higher score elsewhere before committing."
+
+    return suggestion
+
+
+
     """Combine per-criterion scores (0-10 scale, already entered by the user
     or pre-filled from research) with user-set weights (must sum to 100)
     into a single weighted score per site, 0-10 scale.
