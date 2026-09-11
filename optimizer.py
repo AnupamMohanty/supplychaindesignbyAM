@@ -31,21 +31,42 @@ def auto_grid_step_deg(service_radius_km: float, fraction: float = 0.35,
 
 
 def generate_candidate_sites(demand_df: pd.DataFrame, grid_step_deg: float = 0.03,
-                              buffer_deg: float = 0.02) -> pd.DataFrame:
-    """Generate candidate warehouse sites on a grid covering the demand region."""
-    min_lat, max_lat = demand_df["lat"].min() - buffer_deg, demand_df["lat"].max() + buffer_deg
-    min_lon, max_lon = demand_df["lon"].min() - buffer_deg, demand_df["lon"].max() + buffer_deg
+                              neighborhood: int = 1, max_candidates: int = 4000) -> pd.DataFrame:
+    """Generate candidate warehouse sites on a grid, anchored around actual
+    demand locations rather than a uniform grid over the full bounding box.
 
-    lat_points = np.arange(min_lat, max_lat, grid_step_deg)
-    lon_points = np.arange(min_lon, max_lon, grid_step_deg)
+    This matters for geographically spread demand (e.g. nationwide data):
+    a uniform grid over the whole bounding box scales with area, which can
+    reach into the millions of candidates for a continent-spanning dataset
+    and crash the app. Anchoring on demand points instead makes candidate
+    count scale with the number of demand locations, staying manageable
+    regardless of how spread out they are, while still generating a fine
+    local grid within each demand cluster.
 
-    candidates = []
-    cid = 1
-    for lat in lat_points:
-        for lon in lon_points:
-            candidates.append({"site_id": f"S{cid:03d}", "lat": lat, "lon": lon})
-            cid += 1
-    cand_df = pd.DataFrame(candidates)
+    `neighborhood` controls how many grid cells out from each demand point
+    are included (1 = a 3x3 neighborhood around each point).
+    """
+    grid_cells = set()
+    offsets = range(-neighborhood, neighborhood + 1)
+    for lat, lon in zip(demand_df["lat"], demand_df["lon"]):
+        base_lat = round(lat / grid_step_deg) * grid_step_deg
+        base_lon = round(lon / grid_step_deg) * grid_step_deg
+        for dlat in offsets:
+            for dlon in offsets:
+                grid_cells.add((round(base_lat + dlat * grid_step_deg, 6),
+                                 round(base_lon + dlon * grid_step_deg, 6)))
+
+    grid_cells = list(grid_cells)
+    if len(grid_cells) > max_candidates:
+        # Safety valve for very large demand datasets — randomly thin down
+        # rather than crash. Documented as a known limitation for huge inputs.
+        rng = np.random.default_rng(42)
+        idx = rng.choice(len(grid_cells), size=max_candidates, replace=False)
+        grid_cells = [grid_cells[i] for i in idx]
+
+    cand_df = pd.DataFrame(
+        [{"site_id": f"S{i+1:04d}", "lat": lat, "lon": lon} for i, (lat, lon) in enumerate(sorted(grid_cells))]
+    )
 
     # Simple radial lease-cost proxy — replace with real cost data when available
     center_lat, center_lon = demand_df["lat"].mean(), demand_df["lon"].mean()
@@ -238,9 +259,16 @@ def validate_demand_df(df: pd.DataFrame) -> tuple[bool, str]:
     missing = required_cols - set(df.columns)
     if missing:
         return False, f"Missing required columns: {', '.join(sorted(missing))}"
-    if df[["city", "country", "product_id", "demand_value"]].isnull().any().any():
-        return False, "Found empty values in city, country, product_id, or demand_value — every row needs all four."
-    if (df["demand_value"] < 0).any():
+    if df[["city", "country", "product_id"]].isnull().any().any():
+        return False, "Found empty values in city, country, or product_id — every row needs all three."
+
+    # Coerce demand_value to numeric rather than assuming it already is —
+    # manual edits in the table can leave stray text, which would otherwise
+    # crash the numeric comparison below with a raw Python error.
+    numeric_demand = pd.to_numeric(df["demand_value"], errors="coerce")
+    if numeric_demand.isnull().any():
+        return False, "demand_value has empty or non-numeric entries — every row needs a numeric value."
+    if (numeric_demand < 0).any():
         return False, "demand_value cannot be negative."
     return True, ""
 
@@ -275,8 +303,10 @@ def coordinates_ready(df: pd.DataFrame) -> tuple[bool, str]:
         return True, ""  # empty is a separate concern, handled elsewhere
     if "lat" not in df.columns or "lon" not in df.columns:
         return False, "No coordinates found — use 'Geocode missing locations' first."
-    if df["lat"].isnull().any() or df["lon"].isnull().any():
-        return False, "Some rows are missing coordinates — click 'Geocode missing locations' or fill lat/lon in manually."
-    if not df["lat"].between(-90, 90).all() or not df["lon"].between(-180, 180).all():
+    lat_numeric = pd.to_numeric(df["lat"], errors="coerce")
+    lon_numeric = pd.to_numeric(df["lon"], errors="coerce")
+    if lat_numeric.isnull().any() or lon_numeric.isnull().any():
+        return False, "Some rows are missing or have non-numeric coordinates — click 'Geocode missing locations' or fill lat/lon in manually."
+    if not lat_numeric.between(-90, 90).all() or not lon_numeric.between(-180, 180).all():
         return False, "Latitude/longitude values are out of valid range."
     return True, ""
