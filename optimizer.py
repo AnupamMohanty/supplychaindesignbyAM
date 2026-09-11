@@ -420,29 +420,6 @@ def suggest_best_next_location(dc_name: str, scores_row: pd.Series, weights: dic
     return suggestion
 
 
-
-    """Combine per-criterion scores (0-10 scale, already entered by the user
-    or pre-filled from research) with user-set weights (must sum to 100)
-    into a single weighted score per site, 0-10 scale.
-
-    `scores_df` must have a 'dc_name' column plus one numeric column per
-    criterion key in `weights`. Missing/non-numeric cells are treated as 0.
-    """
-    result = scores_df.copy()
-    total_weight = sum(weights.values())
-    if total_weight <= 0:
-        result["weighted_score"] = 0.0
-        return result
-
-    weighted_sum = pd.Series(0.0, index=result.index)
-    for key, weight in weights.items():
-        if key in result.columns:
-            col_numeric = pd.to_numeric(result[key], errors="coerce").fillna(0)
-            weighted_sum += col_numeric * (weight / total_weight)
-    result["weighted_score"] = weighted_sum.round(2)
-    return result.sort_values("weighted_score", ascending=False).reset_index(drop=True)
-
-
 def compute_weighted_scores(scores_df: pd.DataFrame, weights: dict) -> pd.DataFrame:
     """Combine per-criterion scores (0-10 scale, already entered by the user
     or pre-filled from research) with user-set weights (must sum to 100)
