@@ -113,8 +113,8 @@ def geocode_locations(df: pd.DataFrame, city_col: str = "city", country_col: str
     if lon_col not in df.columns:
         df[lon_col] = np.nan
 
-    geolocator = Nominatim(user_agent="supply_chain_design_by_am")
-    geocode = RateLimiter(geolocator.geocode, min_delay_seconds=1, max_retries=1)
+    geolocator = Nominatim(user_agent="supply_chain_design_by_am", timeout=5)
+    geocode = RateLimiter(geolocator.geocode, min_delay_seconds=1, max_retries=1, error_wait_seconds=1.0)
 
     failed_rows = []
     for idx, row in df.iterrows():
@@ -205,6 +205,172 @@ def compute_weighted_avg_distance_km(demand_df: pd.DataFrame, facility_lat_lon_d
     if total_weight <= 0:
         return None
     return float((nearest_km * weights).sum() / total_weight)
+
+
+def reverse_geocode_names(sites_df: pd.DataFrame) -> list:
+    """Reverse-geocode each site's lat/lon into a human-readable name
+    (e.g. "Ashburn, Virginia, USA") using OpenStreetMap's free Nominatim
+    service. Falls back to the site_id if a lookup fails, so naming never
+    blocks the rest of the app."""
+    from geopy.geocoders import Nominatim
+    from geopy.extra.rate_limiter import RateLimiter
+
+    geolocator = Nominatim(user_agent="supply_chain_design_by_am", timeout=5)
+    reverse = RateLimiter(geolocator.reverse, min_delay_seconds=1, max_retries=1, error_wait_seconds=1.0)
+
+    names = []
+    for _, row in sites_df.iterrows():
+        fallback = str(row.get("site_id", "DC"))
+        try:
+            location = reverse((row["lat"], row["lon"]), exactly_one=True, zoom=10)
+            if location and location.raw.get("address"):
+                addr = location.raw["address"]
+                place = addr.get("city") or addr.get("town") or addr.get("village") or \
+                    addr.get("county") or addr.get("suburb")
+                region = addr.get("state") or addr.get("region")
+                parts = [p for p in [place, region] if p]
+                names.append(", ".join(parts) if parts else fallback)
+            else:
+                names.append(fallback)
+        except Exception:
+            names.append(fallback)
+    return names
+
+
+def assign_customers_to_facilities(demand_df: pd.DataFrame, facilities_df: pd.DataFrame,
+                                    epsg: int) -> pd.DataFrame:
+    """For each demand row, find its NEAREST open facility (existing + new
+    combined) and attach that facility's identity + distance. This answers
+    "which DC is serving which customers" — every demand point is assigned
+    to exactly one facility, its closest one, regardless of service radius.
+    `facilities_df` must have columns: facility_name, lat, lon (at minimum).
+    """
+    result = demand_df.copy().reset_index(drop=True)
+    if facilities_df is None or len(facilities_df) == 0:
+        result["assigned_facility_name"] = None
+        result["distance_to_facility_km"] = None
+        return result
+
+    fac_xy = _xy_meters(facilities_df, epsg)
+    dem_xy = _xy_meters(demand_df, epsg)
+    dists_m = np.sqrt(((dem_xy[:, None, :] - fac_xy[None, :, :]) ** 2).sum(axis=2))
+    nearest_idx = dists_m.argmin(axis=1)
+    nearest_km = dists_m.min(axis=1) / 1000
+
+    facilities_reset = facilities_df.reset_index(drop=True)
+    result["assigned_facility_name"] = facilities_reset.loc[nearest_idx, "facility_name"].values
+    result["distance_to_facility_km"] = np.round(nearest_km, 2)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Site scoring — weighted multi-criteria evaluation of opened locations
+# ---------------------------------------------------------------------------
+
+DEFAULT_SCORING_CRITERIA = [
+    {"key": "logistics_infra", "label": "Logistics Infrastructure", "default_weight": 20},
+    {"key": "labor_availability", "label": "Labor Availability", "default_weight": 20},
+    {"key": "warehouse_rental_cost", "label": "Warehouse Rental Cost (lower=better)", "default_weight": 15},
+    {"key": "highway_proximity", "label": "Highway Proximity", "default_weight": 15},
+    {"key": "airport_proximity", "label": "Airport Proximity", "default_weight": 10},
+    {"key": "seaport_proximity", "label": "Seaport Proximity", "default_weight": 10},
+    {"key": "power_reliability", "label": "Power/Utility Reliability", "default_weight": 5},
+    {"key": "tax_incentives", "label": "Tax & Regulatory Incentives", "default_weight": 5},
+]
+
+
+# Real research (Sept 2026): warehouse rental rates, highway/airport/labor
+# context for a few major US logistics hub regions, condensed to a 0-10 scale
+# per criterion. Used to pre-fill the scoring table when a selected site's
+# reverse-geocoded name matches one of these regions — saves the user from
+# starting with a totally blank table, while being upfront that this is a
+# starting reference, not a substitute for actual site diligence.
+REFERENCE_SITE_SCORES = {
+    "ashburn|loudoun|sterling|virginia|dulles": {
+        "logistics_infra": 9, "labor_availability": 8, "warehouse_rental_cost": 3,
+        "highway_proximity": 9, "airport_proximity": 10, "seaport_proximity": 3,
+        "power_reliability": 7, "tax_incentives": 7,
+        "_note": "Ashburn/Loudoun VA: ~$20/SF/yr industrial rent (LoopNet, Sep 2026) — "
+                 "well above the ~$9.54/SF national average, reflecting Data Center Alley demand. "
+                 "Adjacent to Dulles Intl Airport; Port of Virginia (Norfolk) is ~3hrs away.",
+    },
+    "dallas|fort worth|arlington.*texas|texas": {
+        "logistics_infra": 9, "labor_availability": 8, "warehouse_rental_cost": 7,
+        "highway_proximity": 9, "airport_proximity": 9, "seaport_proximity": 2,
+        "power_reliability": 6, "tax_incentives": 8,
+        "_note": "Dallas-Fort Worth: ~$9-12/SF/yr industrial rent (JLL/CommercialCafe, Q2 2026), "
+                 "1.12B SF total inventory, one of the largest US industrial markets. DFW Airport is a "
+                 "major air cargo hub; nearest seaport (Houston) is ~4hrs away.",
+    },
+    "columbus|new albany|hilliard|ohio": {
+        "logistics_infra": 8, "labor_availability": 7, "warehouse_rental_cost": 7,
+        "highway_proximity": 9, "airport_proximity": 8, "seaport_proximity": 2,
+        "power_reliability": 7, "tax_incentives": 7,
+        "_note": "Columbus OH: ~$10.45/SF/yr industrial rent (CommercialCafe/CityFeet, Aug 2026). "
+                 "Sits at the I-70/I-71 junction; Rickenbacker Intl is a major dedicated air-cargo airport. "
+                 "No direct seaport access.",
+    },
+}
+
+
+def lookup_reference_scores(dc_name: str) -> dict | None:
+    """Best-effort match of a reverse-geocoded DC name against the researched
+    reference regions above. Returns None if no match — the user then fills
+    the scores in manually."""
+    import re
+    if not dc_name:
+        return None
+    name_lower = dc_name.lower()
+    for pattern, scores in REFERENCE_SITE_SCORES.items():
+        if re.search(pattern, name_lower):
+            return {k: v for k, v in scores.items() if k != "_note"}, scores.get("_note", "")
+    return None
+
+
+
+    """Combine per-criterion scores (0-10 scale, already entered by the user
+    or pre-filled from research) with user-set weights (must sum to 100)
+    into a single weighted score per site, 0-10 scale.
+
+    `scores_df` must have a 'dc_name' column plus one numeric column per
+    criterion key in `weights`. Missing/non-numeric cells are treated as 0.
+    """
+    result = scores_df.copy()
+    total_weight = sum(weights.values())
+    if total_weight <= 0:
+        result["weighted_score"] = 0.0
+        return result
+
+    weighted_sum = pd.Series(0.0, index=result.index)
+    for key, weight in weights.items():
+        if key in result.columns:
+            col_numeric = pd.to_numeric(result[key], errors="coerce").fillna(0)
+            weighted_sum += col_numeric * (weight / total_weight)
+    result["weighted_score"] = weighted_sum.round(2)
+    return result.sort_values("weighted_score", ascending=False).reset_index(drop=True)
+
+
+def compute_weighted_scores(scores_df: pd.DataFrame, weights: dict) -> pd.DataFrame:
+    """Combine per-criterion scores (0-10 scale, already entered by the user
+    or pre-filled from research) with user-set weights (must sum to 100)
+    into a single weighted score per site, 0-10 scale.
+
+    `scores_df` must have a 'dc_name' column plus one numeric column per
+    criterion key in `weights`. Missing/non-numeric cells are treated as 0.
+    """
+    result = scores_df.copy()
+    total_weight = sum(weights.values())
+    if total_weight <= 0:
+        result["weighted_score"] = 0.0
+        return result
+
+    weighted_sum = pd.Series(0.0, index=result.index)
+    for key, weight in weights.items():
+        if key in result.columns:
+            col_numeric = pd.to_numeric(result[key], errors="coerce").fillna(0)
+            weighted_sum += col_numeric * (weight / total_weight)
+    result["weighted_score"] = weighted_sum.round(2)
+    return result.sort_values("weighted_score", ascending=False).reset_index(drop=True)
 
 
 def greedy_select_sites(demand_df: pd.DataFrame, cand_df: pd.DataFrame,
