@@ -168,6 +168,45 @@ def compute_coverage_matrix(source_df: pd.DataFrame, demand_df: pd.DataFrame,
     return dists <= service_radius_km * 1000
 
 
+def compute_service_radius(service_time_value: float, service_time_unit: str,
+                            miles_per_day: float) -> tuple[float, float]:
+    """Convert a service-time target + a last-mile daily travel capacity
+    assumption into an effective service radius.
+
+    e.g. "I want to serve customers within 1 day, and a truck can cover
+    400 miles/day" -> effective radius = 400 miles = 643.7 km.
+
+    Returns (radius_km, radius_miles).
+    """
+    days = service_time_value if service_time_unit == "Days" else service_time_value / 24.0
+    radius_miles = days * miles_per_day
+    radius_km = radius_miles * 1.60934
+    return radius_km, radius_miles
+
+
+def compute_weighted_avg_distance_km(demand_df: pd.DataFrame, facility_lat_lon_df: pd.DataFrame,
+                                      epsg: int) -> float | None:
+    """Demand-weighted average distance (km) from each demand point to its
+    NEAREST open facility (existing + newly opened combined) — the classic
+    "weighted average service distance" logistics KPI:
+        sum(distance_to_nearest_facility * demand) / sum(demand)
+    Unlike coverage %, this measures actual service quality across every
+    demand point, not just whether it falls inside the radius or not.
+    Returns None if there are no facilities to measure against.
+    """
+    if facility_lat_lon_df is None or len(facility_lat_lon_df) == 0:
+        return None
+    fac_xy = _xy_meters(facility_lat_lon_df, epsg)
+    dem_xy = _xy_meters(demand_df, epsg)
+    dists_m = np.sqrt(((dem_xy[:, None, :] - fac_xy[None, :, :]) ** 2).sum(axis=2))
+    nearest_km = dists_m.min(axis=1) / 1000
+    weights = demand_df["demand_value"].values
+    total_weight = weights.sum()
+    if total_weight <= 0:
+        return None
+    return float((nearest_km * weights).sum() / total_weight)
+
+
 def greedy_select_sites(demand_df: pd.DataFrame, cand_df: pd.DataFrame,
                          existing_df: pd.DataFrame | None,
                          service_radius_km: float = 8.0,
@@ -231,8 +270,23 @@ def greedy_select_sites(demand_df: pd.DataFrame, cand_df: pd.DataFrame,
         if mode == "service_target" and row["cumulative_coverage_pct"] >= target_pct:
             break
 
-    selected_df = pd.DataFrame(selected_rows)
+    expected_cols = list(cand_df.columns) + ["incremental_demand_covered", "cumulative_covered_demand", "cumulative_coverage_pct"]
+    selected_df = pd.DataFrame(selected_rows, columns=expected_cols) if selected_rows else pd.DataFrame(columns=expected_cols)
     final_covered_demand = demand_vals[covered].sum()
+
+    # Weighted average service distance — measured against ALL open
+    # facilities (existing kept open + every new site just selected),
+    # regardless of the coverage radius. This is a service-quality KPI,
+    # distinct from coverage %: a demand point can be "outside" the
+    # service radius and still have a nearest-facility distance.
+    facility_frames = []
+    if existing_df is not None and len(existing_df) > 0:
+        facility_frames.append(existing_df[["lat", "lon"]])
+    if len(selected_df) > 0:
+        facility_frames.append(selected_df[["lat", "lon"]])
+    combined_facilities = pd.concat(facility_frames, ignore_index=True) if facility_frames else None
+    weighted_avg_distance_km = compute_weighted_avg_distance_km(demand_df, combined_facilities, epsg)
+
     summary = {
         "total_demand": round(total_demand, 1),
         "baseline_covered_demand": round(baseline_covered_demand, 1),
@@ -242,6 +296,7 @@ def greedy_select_sites(demand_df: pd.DataFrame, cand_df: pd.DataFrame,
         "sites_selected": len(selected_idx),
         "target_met": (mode == "service_target" and
                         (final_covered_demand / total_demand * 100 if total_demand > 0 else 0) >= target_pct),
+        "weighted_avg_distance_km": round(weighted_avg_distance_km, 2) if weighted_avg_distance_km is not None else None,
     }
     return selected_df, summary
 
@@ -276,12 +331,12 @@ def validate_demand_df(df: pd.DataFrame) -> tuple[bool, str]:
 def validate_products_df(df: pd.DataFrame) -> tuple[bool, str]:
     if df is None or len(df) == 0:
         return False, "Products table is empty — add at least one product."
-    required_cols = {"product_id", "product_name", "unit_of_measure"}
+    required_cols = {"product_id", "product_name"}
     missing = required_cols - set(df.columns)
     if missing:
         return False, f"Products table missing columns: {', '.join(sorted(missing))}"
-    if df[["product_id", "product_name", "unit_of_measure"]].isnull().any().any():
-        return False, "Found empty values in product_id, product_name, or unit_of_measure."
+    if df[["product_id", "product_name"]].isnull().any().any():
+        return False, "Found empty values in product_id or product_name."
     return True, ""
 
 
