@@ -11,6 +11,7 @@ from optimizer import (
     DEFAULT_SCORING_CRITERIA,
     assign_customers_to_facilities,
     auto_grid_step_deg,
+    build_data_sources_workbook,
     compute_service_radius,
     compute_weighted_scores,
     coordinates_ready,
@@ -21,6 +22,7 @@ from optimizer import (
     lookup_reference_scores,
     needs_geocoding,
     reverse_geocode_names,
+    suggest_best_next_location,
     validate_demand_df,
     validate_existing_df,
     validate_products_df,
@@ -29,11 +31,12 @@ from optimizer import (
 st.set_page_config(page_title="Supply Chain Design by AM", layout="wide", page_icon="🚚")
 
 # ---------- Theme ----------
-st.markdown("""
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<style>
-html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
-
+# IMPORTANT: no blank lines inside this <style> block. Streamlit's markdown
+# renderer splits raw HTML on blank lines into separate "paragraphs", and any
+# paragraph not starting with a recognized HTML tag gets escaped and shown
+# as literal text on the page instead of being applied as CSS.
+st.markdown("""<style>
+html, body, [class*="css"] { font-family: -apple-system, 'Segoe UI', Roboto, Inter, sans-serif; }
 .hero {
     background: linear-gradient(120deg, #0B3D91 0%, #123B7A 55%, #0A2A63 100%);
     color: #FFFFFF;
@@ -49,34 +52,38 @@ html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
     font-weight: 700; font-size: 12px; padding: 3px 10px; border-radius: 20px;
     margin-top: 10px;
 }
-
 .section-title {
     font-size: 17px; font-weight: 700; color: #0B3D91;
     margin-bottom: 2px; display: flex; align-items: center; gap: 8px;
 }
 .section-sub { color: #6B7A99; font-size: 13px; margin-bottom: 14px; }
-
 div[data-testid="stMetric"] {
     background: #FFFFFF; border: 1px solid #E7ECF5; border-radius: 12px;
     padding: 14px 16px; box-shadow: 0 2px 8px rgba(11,61,145,0.05);
 }
 div[data-testid="stMetricLabel"] { font-weight: 600; color: #4A5A78; }
-
 div.stButton > button[kind="primary"] {
     background: linear-gradient(120deg, #F5C518, #E8B400);
     color: #0B3D91; border: none; font-weight: 700;
     box-shadow: 0 4px 12px rgba(245,197,24,0.35);
 }
 div.stButton > button[kind="primary"]:hover { filter: brightness(1.05); }
-
 [data-testid="stSidebar"] { background: #F7F9FC; border-right: 1px solid #E7ECF5; }
-</style>
-<div class="hero">
+.rec-card {
+    background: linear-gradient(135deg, #F7F9FC 0%, #EAF2FB 100%);
+    border: 1px solid #D9E4F5; border-radius: 14px; padding: 20px 24px; margin-top: 10px;
+}
+.source-pill {
+    display: inline-block; background: #EAF2FB; color: #0B3D91;
+    font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px;
+}
+</style>""", unsafe_allow_html=True)
+
+st.markdown("""<div class="hero">
     <h1>🚚 Supply Chain Design by AM</h1>
     <p>Greenfield facility location optimizer — demand, network, and site scoring in one flow</p>
     <span class="badge">GREENFIELD · MCLP ENGINE</span>
-</div>
-""", unsafe_allow_html=True)
+</div>""", unsafe_allow_html=True)
 
 # ---------- Empty-table schemas (no forced sample data) ----------
 EMPTY_PRODUCTS = pd.DataFrame(columns=["product_id", "product_name"])
@@ -379,6 +386,7 @@ if st.session_state.view == "input":
         st.session_state["run_target_pct"] = target_pct
         st.session_state["run_max_sites_cap"] = max_sites_cap
         st.session_state["run_uom"] = active_uom
+        st.session_state["run_cand_df"] = cand_df
         st.session_state["view"] = "results"
         st.rerun()
 
@@ -411,8 +419,9 @@ else:
     wavg = summary.get("weighted_avg_distance_km")
     if wavg is not None:
         wavg_miles = wavg * 0.621371
-        m5.metric("⭐ Weighted avg service distance", f"{wavg:.0f} km",
-                  help=f"≈ {wavg_miles:.0f} miles. Σ(distance to nearest facility × demand) / Σ(demand).")
+        m5.metric("⭐ Weighted avg service distance", f"{wavg_miles:.0f} mi ({wavg:.0f} km)",
+                  help="Σ(distance to nearest facility × demand) / Σ(demand) — demand-weighted average "
+                       "distance from every customer to its nearest open facility.")
     else:
         m5.metric("Weighted avg service distance", "—")
 
@@ -467,8 +476,8 @@ else:
             bubble_radius = 4 + (row["demand_value"] / max_demand) * 20
             served_by = row.get("assigned_facility_name", "")
             folium.CircleMarker(
-                [row["lat"], row["lon"]], radius=bubble_radius, color="#0B36C0",
-                fill=True, fill_color="#0B36C0", fill_opacity=0.45, weight=1,
+                [row["lat"], row["lon"]], radius=bubble_radius, color="#D32F2F",
+                fill=True, fill_color="#E53935", fill_opacity=0.45, weight=1,
                 popup=f"{row.get('city', '')}: {row['demand_value']:.0f} {run_uom}<br>Served by: {served_by}",
             ).add_to(demand_layer)
         demand_layer.add_to(m)
@@ -512,10 +521,6 @@ else:
             display_cols = ["dc_name", "incremental_demand_covered", "cumulative_coverage_pct", "monthly_lease_cost"]
             display_cols = [c for c in display_cols if c in selected_df.columns]
             st.dataframe(selected_df[display_cols].round(2), hide_index=True, width="stretch")
-            csv_buffer = io.StringIO()
-            selected_df.to_csv(csv_buffer, index=False)
-            st.download_button("⬇ Download results (CSV)", csv_buffer.getvalue(),
-                                file_name="selected_sites.csv", mime="text/csv", width="stretch")
         else:
             st.caption("No new sites opened in this run.")
 
@@ -525,15 +530,35 @@ else:
             serve_counts.columns = ["# customers", f"Total {run_uom}"]
             st.dataframe(serve_counts.round(1), width="stretch")
 
+            # Customer-level detail export: dc_name, customer, demand, distance in miles
+            detail_export = run_demand_df.copy()
+            detail_export["customer"] = detail_export.get("city", "")
+            detail_export["distance_miles"] = (detail_export["distance_to_facility_km"] * 0.621371).round(2)
+            detail_export = detail_export.rename(columns={"assigned_facility_name": "dc_name",
+                                                            "demand_value": f"demand_{run_uom}"})
+            detail_cols = ["dc_name", "customer", f"demand_{run_uom}", "distance_miles"]
+            detail_cols = [c for c in detail_cols if c in detail_export.columns]
+            csv_buffer = io.StringIO()
+            detail_export[detail_cols].to_csv(csv_buffer, index=False)
+            st.download_button("⬇ Download customer-level results (CSV)", csv_buffer.getvalue(),
+                                file_name="customer_dc_assignments.csv", mime="text/csv", width="stretch")
+
     # =====================================================================
-    # SITE SCORING
+    # CAUSAL ANALYSIS
     # =====================================================================
     if len(selected_df) > 0:
         st.divider()
-        st.markdown('<div class="section-title">🏆 Site Scoring — weighted multi-criteria evaluation</div>', unsafe_allow_html=True)
-        st.markdown('<div class="section-sub">Set weights for each factor (must total 100%), then score each opened '
-                     'DC 0-10 on that factor. Where a site matches a researched reference region, scores are '
-                     'pre-filled — adjust freely based on your own diligence.</div>', unsafe_allow_html=True)
+        ca_col1, ca_col2 = st.columns([5, 1])
+        with ca_col1:
+            st.markdown('<div class="section-title">🧭 Causal Analysis — weighted multi-criteria evaluation</div>', unsafe_allow_html=True)
+            st.markdown('<div class="section-sub">Set weights for each factor (must total 100%), then score each opened '
+                         'DC 0-10 on that factor. Where a site matches a researched reference region, scores are '
+                         'pre-filled — adjust freely based on your own diligence.</div>', unsafe_allow_html=True)
+        with ca_col2:
+            st.download_button("📊 Data Sources", build_data_sources_workbook(),
+                                file_name="data_sources.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                width="stretch")
 
         weight_cols = st.columns(4)
         new_weights = {}
@@ -576,10 +601,13 @@ else:
             with st.expander("📚 Research notes for matched locations"):
                 for note in st.session_state["_research_notes"]:
                     st.markdown(note)
+                st.caption("Full sourcing with URLs is in the 'Data Sources' download above.")
 
+        st.markdown("**Score each site (0–10 per factor)**")
         score_column_config = {
-            c["key"]: st.column_config.NumberColumn(c["label"], min_value=0, max_value=10, step=1)
-            for c in DEFAULT_SCORING_CRITERIA
+            "dc_name": st.column_config.TextColumn("DC Location", width="medium"),
+            **{c["key"]: st.column_config.NumberColumn(c["label"], min_value=0, max_value=10, step=1)
+               for c in DEFAULT_SCORING_CRITERIA},
         }
         st.session_state.site_scores_df = st.data_editor(
             st.session_state.site_scores_df, width="stretch", key="scores_editor",
@@ -587,8 +615,70 @@ else:
         )
 
         scored = compute_weighted_scores(st.session_state.site_scores_df, new_weights)
+
         st.markdown("**Ranked site scores**")
+        ranked_column_config = {
+            "dc_name": st.column_config.TextColumn("DC Location", width="medium"),
+            "weighted_score": st.column_config.ProgressColumn(
+                "⭐ Weighted Score", min_value=0, max_value=10, format="%.2f"
+            ),
+            **{c["key"]: st.column_config.NumberColumn(c["label"], width="small")
+               for c in DEFAULT_SCORING_CRITERIA},
+        }
         st.dataframe(
             scored[["dc_name", "weighted_score"] + [c["key"] for c in DEFAULT_SCORING_CRITERIA]],
-            hide_index=True, width="stretch",
+            hide_index=True, width="stretch", column_config=ranked_column_config,
         )
+
+        # Best-next-location advisory for any site scoring below the bar
+        low_scorers = scored[scored["weighted_score"] < 7]
+        if len(low_scorers) > 0:
+            st.markdown("**⚠️ Locations below score threshold (7.0) — suggested next steps**")
+            for _, row in low_scorers.iterrows():
+                suggestion = suggest_best_next_location(
+                    row["dc_name"], row, new_weights,
+                    st.session_state.get("run_cand_df"), selected_df, run_service_radius_km,
+                )
+                st.warning(suggestion)
+
+        # =================================================================
+        # RECOMMENDATION — synthesis of optimization + causal analysis
+        # =================================================================
+        st.divider()
+        st.markdown('<div class="section-title">✅ Recommendation</div>', unsafe_allow_html=True)
+
+        top_site = scored.iloc[0] if len(scored) > 0 else None
+        avg_score = scored["weighted_score"].mean() if len(scored) > 0 else 0
+        n_low = len(low_scorers)
+
+        rec_lines = []
+        rec_lines.append(f"This run opens **{summary['sites_selected']} new site(s)**, lifting coverage from "
+                          f"**{summary['baseline_coverage_pct']}%** to **{summary['final_coverage_pct']}%** of total "
+                          f"demand, with a demand-weighted average service distance of "
+                          f"**{(wavg * 0.621371):.0f} miles ({wavg:.0f} km)**." if wavg is not None else
+                          f"This run opens **{summary['sites_selected']} new site(s)**, lifting coverage from "
+                          f"{summary['baseline_coverage_pct']}% to {summary['final_coverage_pct']}%.")
+
+        if top_site is not None:
+            rec_lines.append(f"On causal analysis, **{top_site['dc_name']}** ranks highest "
+                              f"(weighted score **{top_site['weighted_score']:.1f}/10**), making it the strongest "
+                              f"combination of network fit and site-quality factors among the sites opened.")
+
+        rec_lines.append(f"Average causal score across opened sites: **{avg_score:.1f}/10**.")
+
+        if n_low > 0:
+            rec_lines.append(f"⚠️ **{n_low} site(s) scored below 7.0** — see the suggested next steps above before "
+                              f"finalizing. Proceeding with these sites is reasonable if their network-coverage "
+                              f"contribution is high enough to outweigh the causal-factor gap, but it should be a "
+                              f"deliberate trade-off, not a default.")
+        else:
+            rec_lines.append("All opened sites scored at or above the 7.0 quality bar — no immediate causal-factor "
+                              "concerns flagged.")
+
+        rec_lines.append("**Overall:** combine both lenses — the optimizer picked sites that maximize network "
+                          "coverage per site opened; the causal analysis checks whether those same locations are "
+                          "actually good places to operate. Where they agree (high coverage contribution *and* high "
+                          "causal score), proceed with confidence. Where they diverge, use the suggestions above to "
+                          "decide whether to substitute a nearby alternative.")
+
+        st.markdown(f'<div class="rec-card">{"<br><br>".join(rec_lines)}</div>', unsafe_allow_html=True)
