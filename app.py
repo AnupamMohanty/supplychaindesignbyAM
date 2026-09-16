@@ -370,18 +370,18 @@ with st.sidebar:
     )
     opt_mode = opt_mode or "Number of new sites"
 
+    INTERNAL_MAX_SITES_CAP = 25  # safety cap on the search, not user-facing — avoids runaway site counts
+
     if opt_mode == "Number of new sites":
         num_sites = st.number_input("Number of new sites to open", min_value=1, max_value=50, value=5, step=1)
         target_pct, max_sites_cap, mode_key = None, None, "num_sites"
     else:
         target_pct = st.number_input("Target % of demand to serve", min_value=1.0,
                                       max_value=100.0, value=80.0, step=1.0)
-        max_sites_cap = st.number_input("Max new sites allowed (safety cap)", min_value=1, max_value=50, value=15, step=1)
         num_sites, mode_key = None, "service_target"
+        max_sites_cap = INTERNAL_MAX_SITES_CAP
 
-    st.divider()
-    st.markdown("### ⏱️ Service coverage assumptions")
-
+    st.markdown("**Service coverage — desired time & travel capacity**")
     col_a, col_b = st.columns(2)
     with col_a:
         service_time_value = st.number_input("Desired service time", min_value=0.1, value=1.0, step=0.5)
@@ -390,7 +390,10 @@ with st.sidebar:
 
     miles_per_day = st.number_input("Last-mile daily travel capacity (miles/day)", min_value=50, max_value=1000,
                                      value=400, step=50,
-                                     help="Assumption: how far a delivery truck can realistically travel in one day.")
+                                     help="Assumption: how far a delivery truck can realistically travel in one day. "
+                                          "This becomes a REAL hard constraint on the model — a customer beyond "
+                                          "this distance from every DC is marked Unserved, not silently assigned "
+                                          "to whichever facility happens to be nearest.")
 
     service_radius_km, service_radius_miles = compute_service_radius(service_time_value, service_time_unit, miles_per_day)
     st.caption(f"→ Effective service radius: **{service_radius_km:,.0f} km** ({service_radius_miles:,.0f} miles)")
@@ -711,7 +714,8 @@ if st.session_state.view == "input":
         all_facilities_df = pd.concat(combined_facilities, ignore_index=True) if combined_facilities else None
 
         epsg = estimate_utm_epsg(demand_df["lon"].mean(), demand_df["lat"].mean())
-        assigned_demand_df = assign_customers_to_facilities(demand_df, all_facilities_df, epsg)
+        assigned_demand_df = assign_customers_to_facilities(demand_df, all_facilities_df, epsg,
+                                                              service_radius_km=service_radius_km)
 
         elapsed = time.perf_counter() - start_t
         placeholder.empty()
@@ -755,8 +759,8 @@ elif st.session_state.view == "compare":
                 "Scenario": name,
                 "Baseline": "⭐" if name == st.session_state.baseline_scenario else "",
                 "Sites opened": s["sites_selected"],
-                "Baseline coverage %": s["baseline_coverage_pct"],
                 "Final coverage %": s["final_coverage_pct"],
+                "Unserved demand %": s.get("unserved_demand_pct", 0),
                 "Weighted avg distance (mi)": round(wavg * 0.621371, 1) if wavg is not None else None,
                 "Total demand": s["total_demand"],
             })
@@ -809,8 +813,8 @@ elif st.session_state.view == "compare":
                 st.markdown("**Overview**")
                 t1, t2, t3, t4, t5 = st.columns(5)
                 t1.metric("Sites opened", s["sites_selected"])
-                t2.metric("Baseline coverage", f"{s['baseline_coverage_pct']}%")
-                t3.metric("Final coverage", f"{s['final_coverage_pct']}%")
+                t2.metric("Final coverage", f"{s['final_coverage_pct']}%")
+                t3.metric("Unserved demand", f"{s.get('unserved_demand_pct', 0)}%")
                 t4.metric(f"Total demand ({sc_uom})", f"{s['total_demand']:.0f}")
                 wavg = s.get("weighted_avg_distance_km")
                 if wavg is not None:
@@ -890,15 +894,17 @@ else:
 
     m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("Sites opened", summary["sites_selected"])
-    m2.metric("Baseline coverage", f"{summary['baseline_coverage_pct']}%")
-    m3.metric("Final coverage", f"{summary['final_coverage_pct']}%")
+    m2.metric("Final coverage", f"{summary['final_coverage_pct']}%")
+    m3.metric("Unserved demand", f"{summary.get('unserved_demand_pct', 0)}%",
+              help="Demand beyond every facility's service radius — genuinely out of reach at this radius, "
+                   "not silently assigned to a distant DC.")
     m4.metric(f"Total demand ({run_uom})", f"{summary['total_demand']:.0f}")
     wavg = summary.get("weighted_avg_distance_km")
     if wavg is not None:
         wavg_miles = wavg * 0.621371
         m5.metric("⭐ Weighted avg service distance", f"{wavg_miles:.0f} mi ({wavg:.0f} km)",
-                  help="Σ(distance to nearest facility × demand) / Σ(demand) — demand-weighted average "
-                       "distance from every customer to its nearest open facility.")
+                  help="Σ(distance to nearest facility × demand) / Σ(demand), measured only over SERVED demand "
+                       "(within the service radius) — demand-weighted average distance customers are actually served from.")
     else:
         m5.metric("Weighted avg service distance", "—")
 
@@ -907,8 +913,9 @@ else:
             st.success(f"Target of {run_target_pct}% coverage reached with {summary['sites_selected']} new site(s), "
                        f"within a {run_service_radius_km:,.0f} km ({run_service_radius_miles:,.0f} mi) service radius.")
         else:
-            st.warning(f"Target of {run_target_pct}% coverage NOT reached within the {run_max_sites_cap}-site cap — "
-                       f"reached {summary['final_coverage_pct']}%.")
+            st.warning(f"Target of {run_target_pct}% coverage NOT reached (reached {summary['final_coverage_pct']}%). "
+                       f"Try a larger service time/travel capacity, or a lower target — some demand may simply be "
+                       f"too far from any feasible site within the current service radius.")
 
     if summary["sites_selected"] == 0:
         st.info("No new sites were needed — existing facilities already meet the coverage target within this "
@@ -1068,12 +1075,13 @@ else:
         n_low = len(low_scorers)
 
         rec_lines = []
-        rec_lines.append(f"This run opens **{summary['sites_selected']} new site(s)**, lifting coverage from "
-                          f"**{summary['baseline_coverage_pct']}%** to **{summary['final_coverage_pct']}%** of total "
-                          f"demand, with a demand-weighted average service distance of "
-                          f"**{(wavg * 0.621371):.0f} miles ({wavg:.0f} km)**." if wavg is not None else
-                          f"This run opens **{summary['sites_selected']} new site(s)**, lifting coverage from "
-                          f"{summary['baseline_coverage_pct']}% to {summary['final_coverage_pct']}%.")
+        unserved_pct = summary.get("unserved_demand_pct", 0)
+        rec_lines.append(
+            (f"This run opens **{summary['sites_selected']} new site(s)**, achieving **{summary['final_coverage_pct']}%** "
+             f"coverage of total demand" + (f" ({unserved_pct}% remains unserved, beyond the service radius)" if unserved_pct > 0 else "") +
+             (f", with a demand-weighted average service distance of **{(wavg * 0.621371):.0f} miles ({wavg:.0f} km)** "
+              f"among served customers." if wavg is not None else "."))
+        )
 
         if top_site is not None:
             rec_lines.append(f"On causal analysis, **{top_site['dc_name']}** ranks highest "
