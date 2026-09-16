@@ -96,7 +96,65 @@ div[data-testid="stChatMessage"] { border-radius: 12px; }
     text-align: center; color: #9AA7C0; font-size: 12px; margin-top: 32px;
     padding-top: 16px; border-top: 1px solid #E7ECF5;
 }
+.mks-hero {
+    background: linear-gradient(120deg, #0B3D91 0%, #123B7A 55%, #0A2A63 100%);
+    color: #FFFFFF; padding: 40px 40px; border-radius: 18px; margin-bottom: 20px;
+    box-shadow: 0 10px 30px rgba(11,61,145,0.22);
+}
+.mks-hero h1 { margin: 0; font-size: 36px; font-weight: 800; letter-spacing: -0.5px; }
+.mks-hero .headline { margin: 10px 0 0 0; color: #E7EEFB; font-size: 18px; font-weight: 500; max-width: 720px; }
+.bio-card {
+    background: #FFFFFF; border: 1px solid #E7ECF5; border-radius: 16px; padding: 22px 26px;
+    box-shadow: 0 2px 10px rgba(11,61,145,0.06); display: flex; align-items: center; gap: 20px;
+}
+.bio-avatar {
+    width: 64px; height: 64px; border-radius: 50%; background: linear-gradient(135deg, #0B3D91, #123B7A);
+    display: flex; align-items: center; justify-content: center; color: #F5C518;
+    font-weight: 800; font-size: 24px; flex-shrink: 0;
+}
+.bio-name { font-size: 19px; font-weight: 800; color: #0B3D91; margin: 0; }
+.bio-creds { font-size: 13px; color: #4A5A78; font-weight: 600; margin-top: 2px; }
+.bio-tag { font-size: 13px; color: #6B7A99; margin-top: 4px; }
+.solution-card {
+    border-radius: 16px; padding: 22px; height: 100%;
+}
+.solution-card.available {
+    background: linear-gradient(135deg, #FFFFFF 0%, #EAF2FB 100%);
+    border: 2px solid #0B3D91; box-shadow: 0 6px 20px rgba(11,61,145,0.14);
+}
+.solution-card.dev {
+    background: #F7F9FC; border: 1px solid #E7ECF5;
+}
+.status-badge-live {
+    display: inline-block; background: #0B6B2C; color: #FFFFFF; font-weight: 700;
+    font-size: 11px; padding: 3px 10px; border-radius: 12px; letter-spacing: 0.3px;
+}
+.status-badge-dev {
+    display: inline-block; background: #DCE3F0; color: #5A6B8C; font-weight: 700;
+    font-size: 11px; padding: 3px 10px; border-radius: 12px; letter-spacing: 0.3px;
+}
+.solution-title { font-size: 17px; font-weight: 800; color: #0B3D91; margin: 12px 0 4px 0; }
+.solution-title.muted { color: #6B7A99; }
+.solution-desc { font-size: 13px; color: #5A6B8C; line-height: 1.5; }
 </style>""", unsafe_allow_html=True)
+
+MKS_ICON_DESIGN = ('<svg viewBox="0 0 64 64" width="52" height="52"><circle cx="32" cy="24" r="14" fill="#0B3D91"/>'
+                    '<path d="M32 38 C20 46 20 58 32 62 C44 58 44 46 32 38 Z" fill="#0B3D91"/>'
+                    '<circle cx="26" cy="22" r="3" fill="#F5C518"/><circle cx="38" cy="20" r="3" fill="#F5C518"/>'
+                    '<circle cx="32" cy="30" r="3" fill="#F5C518"/>'
+                    '<line x1="26" y1="22" x2="32" y2="30" stroke="#F5C518" stroke-width="1.5"/>'
+                    '<line x1="38" y1="20" x2="32" y2="30" stroke="#F5C518" stroke-width="1.5"/></svg>')
+MKS_ICON_FLOW = ('<svg viewBox="0 0 64 64" width="52" height="52"><rect x="4" y="26" width="12" height="12" rx="2" fill="#B7C0D6"/>'
+                  '<rect x="26" y="26" width="12" height="12" rx="2" fill="#B7C0D6"/>'
+                  '<rect x="48" y="26" width="12" height="12" rx="2" fill="#B7C0D6"/>'
+                  '<path d="M18 32 L23 32 L20 29 M18 32 L20 35" stroke="#B7C0D6" stroke-width="2" fill="none"/>'
+                  '<path d="M40 32 L45 32 L42 29 M40 32 L42 35" stroke="#B7C0D6" stroke-width="2" fill="none"/></svg>')
+MKS_ICON_INVENTORY = ('<svg viewBox="0 0 64 64" width="52" height="52"><rect x="14" y="36" width="14" height="14" rx="1" fill="#B7C0D6"/>'
+                       '<rect x="30" y="36" width="14" height="14" rx="1" fill="#B7C0D6"/>'
+                       '<rect x="22" y="20" width="14" height="14" rx="1" fill="#B7C0D6"/></svg>')
+MKS_ICON_TWIN = ('<svg viewBox="0 0 64 64" width="52" height="52"><circle cx="20" cy="32" r="12" fill="none" stroke="#B7C0D6" stroke-width="2.5"/>'
+                  '<circle cx="44" cy="32" r="12" fill="none" stroke="#B7C0D6" stroke-width="2.5"/>'
+                  '<line x1="30" y1="32" x2="34" y2="32" stroke="#B7C0D6" stroke-width="2.5" stroke-dasharray="2,2"/></svg>')
 
 st.markdown("""<style>
 #MainMenu {visibility: hidden;}
@@ -104,14 +162,6 @@ footer {visibility: hidden;}
 [data-testid="stToolbar"] {visibility: hidden;}
 [data-testid="stDecoration"] {display: none;}
 </style>""", unsafe_allow_html=True)
-
-st.markdown("""<div class="hero">
-    <h1>🚚 Supply Chain Design by AM</h1>
-    <p>Greenfield facility location optimizer — demand, network, and site scoring in one flow</p>
-    <span class="badge">GREENFIELD · MCLP ENGINE</span>
-    <span class="badge" style="background:#FFFFFF; color:#0B3D91; margin-left:6px;">© Anupam Mohanty</span>
-</div>""", unsafe_allow_html=True)
-
 
 def _step_indicator(current: str):
     steps = [("data", "① Data & Settings"), ("compare", "📊 Compare Scenarios"), ("results", "② Results & Analysis")]
@@ -264,7 +314,7 @@ UOM_OPTIONS = ["Orders", "Quantity (units)", "Weight (kg)", "Weight (lbs)",
 
 # ---------- Session state ----------
 defaults = {
-    "view": "input",
+    "view": "landing",
     "demand_df": EMPTY_DEMAND.copy(),
     "products_df": EMPTY_PRODUCTS.copy(),
     "existing_df": EMPTY_EXISTING.copy(),
@@ -280,6 +330,84 @@ defaults = {
 for k, v in defaults.items():
     if k not in st.session_state:
         st.session_state[k] = v
+
+if st.session_state.view == "landing":
+    st.markdown("""<div class="mks-hero">
+        <h1>MKS Supply Chain Solutions</h1>
+        <p class="headline">End-to-end supply chain decision tools — from network design to digital twins —
+        built to turn real operating data into concrete, defensible decisions.</p>
+    </div>""", unsafe_allow_html=True)
+
+    st.markdown("""<div class="bio-card">
+        <div class="bio-avatar">AM</div>
+        <div>
+            <p class="bio-name">Anupam Mohanty</p>
+            <p class="bio-creds">15+ years of Supply Chain experience · IIM &amp; Purdue alumnus</p>
+            <p class="bio-tag">Building practical, data-driven supply chain decision tools — starting with
+            network design, expanding toward flow, inventory, and digital twin capabilities.</p>
+        </div>
+    </div>""", unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown('<div class="section-title">🧭 Our Solutions</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-sub">One solution is live today. The rest are actively under development.</div>',
+                unsafe_allow_html=True)
+
+    row1_col1, row1_col2 = st.columns(2)
+    row2_col1, row2_col2 = st.columns(2)
+
+    with row1_col1:
+        st.markdown(f"""<div class="solution-card available">
+            {MKS_ICON_DESIGN}
+            <span class="status-badge-live">● LIVE NOW</span>
+            <div class="solution-title">1. Supply Chain Design</div>
+            <div class="solution-desc">Greenfield facility location optimization — demand, network coverage,
+            customer-to-DC assignment, and causal site scoring, all in one flow.</div>
+        </div>""", unsafe_allow_html=True)
+        if st.button("🚀 Launch Supply Chain Design", type="primary", width="stretch", key="launch_design"):
+            st.session_state["view"] = "input"
+            st.rerun()
+
+    with row1_col2:
+        st.markdown(f"""<div class="solution-card dev">
+            {MKS_ICON_FLOW}
+            <span class="status-badge-dev">UNDER DEVELOPMENT</span>
+            <div class="solution-title muted">2. Product Flow Optimization</div>
+            <div class="solution-desc">Optimizing how product physically moves through the network — routing,
+            mode selection, and flow-cost minimization across the supply chain.</div>
+        </div>""", unsafe_allow_html=True)
+        st.button("Coming soon", disabled=True, width="stretch", key="launch_flow")
+
+    with row2_col1:
+        st.markdown(f"""<div class="solution-card dev">
+            {MKS_ICON_INVENTORY}
+            <span class="status-badge-dev">UNDER DEVELOPMENT</span>
+            <div class="solution-title muted">3. Inventory Optimization &amp; Classification</div>
+            <div class="solution-desc">Right-sizing inventory and classifying SKUs (ABC/XYZ and beyond) to
+            balance service levels against working capital.</div>
+        </div>""", unsafe_allow_html=True)
+        st.button("Coming soon", disabled=True, width="stretch", key="launch_inventory")
+
+    with row2_col2:
+        st.markdown(f"""<div class="solution-card dev">
+            {MKS_ICON_TWIN}
+            <span class="status-badge-dev">UNDER DEVELOPMENT</span>
+            <div class="solution-title muted">4. Supply Chain Digital Twin</div>
+            <div class="solution-desc">A living simulation of the end-to-end network — stress-test disruptions
+            and policy changes before committing to them in the real world.</div>
+        </div>""", unsafe_allow_html=True)
+        st.button("Coming soon", disabled=True, width="stretch", key="launch_twin")
+
+else:
+    st.markdown("""<div class="hero">
+        <h1>🚚 MKS Supply Chain Solutions · Supply Chain Design</h1>
+        <p>Greenfield facility location optimizer — demand, network, and site scoring in one flow</p>
+        <span class="badge">GREENFIELD · MCLP ENGINE</span>
+        <span class="badge" style="background:#FFFFFF; color:#0B3D91; margin-left:6px;">© Anupam Mohanty</span>
+    </div>""", unsafe_allow_html=True)
+    if st.button("← Back to MKS Solutions Home"):
+        st.session_state["view"] = "landing"
+        st.rerun()
 
 
 def _sample_demand():
@@ -308,167 +436,169 @@ def _sample_demand():
 
 
 # ---------- Sidebar: model-wide settings + optimization controls ----------
-with st.sidebar:
-    with st.expander("🤖 GenAI settings (optional)"):
-        st.session_state.api_key = st.text_input(
-            "Anthropic API key", value=st.session_state.api_key, type="password",
-            help="Powers the basefile copilot and the natural-language scenario chat below. "
-                 "Your key is kept only in this session, never saved to disk. Get one at console.anthropic.com. "
-                 "NOT required for the 'Compare All Scenarios' button — that works free, with no key.",
-        )
-        if not st.session_state.api_key:
-            st.caption("Optional — the free 'Compare All Scenarios' button below doesn't need this.")
+if st.session_state.view != "landing":
+    with st.sidebar:
+        with st.expander("🤖 GenAI settings (optional)"):
+            st.session_state.api_key = st.text_input(
+                "Anthropic API key", value=st.session_state.api_key, type="password",
+                help="Powers the basefile copilot and the natural-language scenario chat below. "
+                     "Your key is kept only in this session, never saved to disk. Get one at console.anthropic.com. "
+                     "NOT required for the 'Compare All Scenarios' button — that works free, with no key.",
+            )
+            if not st.session_state.api_key:
+                st.caption("Optional — the free 'Compare All Scenarios' button below doesn't need this.")
 
-    st.markdown("""<div style="background:#0B3D91; border-radius:12px; padding:12px 14px; margin-bottom:12px;">
-        <span style="color:#F5C518; font-weight:800; font-size:15px;">💾 Saved Scenarios</span>
-        </div>""", unsafe_allow_html=True)
+        st.markdown("""<div style="background:#0B3D91; border-radius:12px; padding:12px 14px; margin-bottom:12px;">
+            <span style="color:#F5C518; font-weight:800; font-size:15px;">💾 Saved Scenarios</span>
+            </div>""", unsafe_allow_html=True)
 
-    n_scenarios = len(st.session_state.scenarios)
-    n_runnable = len([s for s in st.session_state.scenarios.values() if s.get("summary")])
+        n_scenarios = len(st.session_state.scenarios)
+        n_runnable = len([s for s in st.session_state.scenarios.values() if s.get("summary")])
 
-    if n_scenarios == 0:
-        st.caption("No scenarios saved yet. Run the optimizer, then use 'Save current scenario' below to start comparing.")
-    else:
-        for name, snap in list(st.session_state.scenarios.items()):
-            label = f"⭐ **{name}**" if name == st.session_state.baseline_scenario else f"**{name}**"
-            st.markdown(label)
-            if snap.get("summary"):
-                s = snap["summary"]
-                wavg = s.get("weighted_avg_distance_km")
-                wavg_txt = f" · {wavg*0.621371:.0f} mi avg" if wavg is not None else ""
-                st.caption(f"{s['sites_selected']} sites · {s['final_coverage_pct']}% coverage{wavg_txt}")
-            else:
-                st.caption("Inputs only — not yet run")
-            lc1, lc2 = st.columns(2)
-            with lc1:
-                if st.button("Load", key=f"load_{name}", width="stretch"):
-                    st.session_state.demand_df = snap["demand_df"].copy()
-                    st.session_state.products_df = snap["products_df"].copy()
-                    st.session_state.existing_df = snap["existing_df"].copy()
-                    st.session_state.include_existing = snap["include_existing"]
-                    st.session_state["view"] = "input"
-                    st.rerun()
-            with lc2:
-                if st.button("Delete", key=f"delete_{name}", width="stretch"):
-                    del st.session_state.scenarios[name]
-                    if st.session_state.baseline_scenario == name:
-                        st.session_state.baseline_scenario = None
-                    st.rerun()
-
-        st.markdown("")
-        if st.button("📊 Compare All Scenarios", type="primary", width="stretch",
-                      disabled=n_runnable < 2,
-                      help=None if n_runnable >= 2 else "Save at least 2 scenarios with a completed run to compare."):
-            st.session_state["view"] = "compare"
-            st.rerun()
-        if n_runnable < 2:
-            st.caption(f"{n_runnable}/2 scenarios with completed runs — free, no API key needed.")
-
-    st.divider()
-    st.markdown("### ⚙️ Model settings")
-
-    uom_choice = st.selectbox("Unit of measure for this model", UOM_OPTIONS,
-                               index=UOM_OPTIONS.index(st.session_state.model_uom)
-                               if st.session_state.model_uom in UOM_OPTIONS else 0,
-                               help="Every demand_value in this model is measured in this single unit. "
-                                    "One unit for the whole model — mixing units breaks the math.")
-    st.session_state.model_uom = uom_choice
-    if uom_choice == "Other (specify below)":
-        st.session_state.model_uom_custom = st.text_input("Custom unit name", value=st.session_state.model_uom_custom)
-    active_uom = st.session_state.model_uom_custom if uom_choice == "Other (specify below)" and st.session_state.model_uom_custom else uom_choice
-
-    st.divider()
-    st.markdown("### 🎯 Optimize by")
-    opt_mode = st.segmented_control(
-        "Choose optimization mode", options=["Number of new sites", "Service coverage target (%)"],
-        default="Number of new sites", label_visibility="collapsed",
-    )
-    opt_mode = opt_mode or "Number of new sites"
-
-    INTERNAL_MAX_SITES_CAP = 25  # safety cap on the search, not user-facing — avoids runaway site counts
-
-    if opt_mode == "Number of new sites":
-        num_sites = st.number_input("Number of new sites to open", min_value=1, max_value=50, value=5, step=1)
-        target_pct, max_sites_cap, mode_key = None, None, "num_sites"
-    else:
-        target_pct = st.number_input("Target % of demand to serve", min_value=1.0,
-                                      max_value=100.0, value=80.0, step=1.0)
-        num_sites, mode_key = None, "service_target"
-        max_sites_cap = INTERNAL_MAX_SITES_CAP
-
-    st.markdown("**Service coverage — desired time & travel capacity**")
-    col_a, col_b = st.columns(2)
-    with col_a:
-        service_time_value = st.number_input("Desired service time", min_value=0.1, value=1.0, step=0.5)
-    with col_b:
-        service_time_unit = st.selectbox("Unit", ["Days", "Hours"])
-
-    miles_per_day = st.number_input("Last-mile daily travel capacity (miles/day)", min_value=50, max_value=1000,
-                                     value=400, step=50,
-                                     help="Assumption: how far a delivery truck can realistically travel in one day. "
-                                          "This becomes a REAL hard constraint on the model — a customer beyond "
-                                          "this distance from every DC is marked Unserved, not silently assigned "
-                                          "to whichever facility happens to be nearest.")
-
-    service_radius_km, service_radius_miles = compute_service_radius(service_time_value, service_time_unit, miles_per_day)
-    st.caption(f"→ Effective service radius: **{service_radius_km:,.0f} km** ({service_radius_miles:,.0f} miles)")
-
-    st.session_state.include_existing = st.checkbox(
-        "Include existing sites in this run?", value=st.session_state.include_existing,
-        help="Uncheck to run a pure greenfield analysis, ignoring the Existing Facilities table entirely."
-    )
-
-    st.divider()
-    st.markdown("### 💾 Save current scenario")
-
-    scenario_name = st.text_input("Scenario name", key="scenario_name_input", placeholder="e.g. Baseline 2026")
-    is_baseline_checkbox = st.checkbox("Consider this scenario as baseline?", key="is_baseline_checkbox")
-
-    sc_col1, sc_col2 = st.columns(2)
-    with sc_col1:
-        save_scenario_clicked = st.button("💾 Save", width="stretch")
-    with sc_col2:
-        clear_scenario_clicked = st.button("🗑️ Clear inputs", width="stretch")
-
-    if save_scenario_clicked:
-        if not scenario_name.strip():
-            st.warning("Give the scenario a name before saving.")
+        if n_scenarios == 0:
+            st.caption("No scenarios saved yet. Run the optimizer, then use 'Save current scenario' below to start comparing.")
         else:
-            snapshot = {
-                "products_df": st.session_state.products_df.copy(),
-                "demand_df": st.session_state.demand_df.copy(),
-                "existing_df": st.session_state.existing_df.copy(),
-                "model_uom": active_uom,
-                "include_existing": st.session_state.include_existing,
-                "service_time_value": service_time_value,
-                "service_time_unit": service_time_unit,
-                "miles_per_day": miles_per_day,
-                "service_radius_km": service_radius_km,
-                "opt_mode": opt_mode,
-                "num_sites": num_sites,
-                "target_pct": target_pct,
-                "max_sites_cap": max_sites_cap,
-                "is_baseline": is_baseline_checkbox,
-                "summary": st.session_state.get("opt_summary"),
-                "selected_df": st.session_state.get("selected_df"),
-                "run_demand_df": st.session_state.get("run_demand_df"),
-            }
-            st.session_state.scenarios[scenario_name.strip()] = snapshot
-            if is_baseline_checkbox:
-                st.session_state.baseline_scenario = scenario_name.strip()
-            st.success(f"Scenario '{scenario_name.strip()}' saved" +
-                       (" as baseline." if is_baseline_checkbox else "."))
+            for name, snap in list(st.session_state.scenarios.items()):
+                label = f"⭐ **{name}**" if name == st.session_state.baseline_scenario else f"**{name}**"
+                st.markdown(label)
+                if snap.get("summary"):
+                    s = snap["summary"]
+                    wavg = s.get("weighted_avg_distance_km")
+                    wavg_txt = f" · {wavg*0.621371:.0f} mi avg" if wavg is not None else ""
+                    st.caption(f"{s['sites_selected']} sites · {s['final_coverage_pct']}% coverage{wavg_txt}")
+                else:
+                    st.caption("Inputs only — not yet run")
+                lc1, lc2 = st.columns(2)
+                with lc1:
+                    if st.button("Load", key=f"load_{name}", width="stretch"):
+                        st.session_state.demand_df = snap["demand_df"].copy()
+                        st.session_state.products_df = snap["products_df"].copy()
+                        st.session_state.existing_df = snap["existing_df"].copy()
+                        st.session_state.include_existing = snap["include_existing"]
+                        st.session_state["view"] = "input"
+                        st.rerun()
+                with lc2:
+                    if st.button("Delete", key=f"delete_{name}", width="stretch"):
+                        del st.session_state.scenarios[name]
+                        if st.session_state.baseline_scenario == name:
+                            st.session_state.baseline_scenario = None
+                        st.rerun()
+
+            st.markdown("")
+            if st.button("📊 Compare All Scenarios", type="primary", width="stretch",
+                          disabled=n_runnable < 2,
+                          help=None if n_runnable >= 2 else "Save at least 2 scenarios with a completed run to compare."):
+                st.session_state["view"] = "compare"
+                st.rerun()
+            if n_runnable < 2:
+                st.caption(f"{n_runnable}/2 scenarios with completed runs — free, no API key needed.")
+
+        st.divider()
+        st.markdown("### ⚙️ Model settings")
+
+        uom_choice = st.selectbox("Unit of measure for this model", UOM_OPTIONS,
+                                   index=UOM_OPTIONS.index(st.session_state.model_uom)
+                                   if st.session_state.model_uom in UOM_OPTIONS else 0,
+                                   help="Every demand_value in this model is measured in this single unit. "
+                                        "One unit for the whole model — mixing units breaks the math.")
+        st.session_state.model_uom = uom_choice
+        if uom_choice == "Other (specify below)":
+            st.session_state.model_uom_custom = st.text_input("Custom unit name", value=st.session_state.model_uom_custom)
+        active_uom = st.session_state.model_uom_custom if uom_choice == "Other (specify below)" and st.session_state.model_uom_custom else uom_choice
+
+        st.divider()
+        st.markdown("### 🎯 Optimize by")
+        opt_mode = st.segmented_control(
+            "Choose optimization mode", options=["Number of new sites", "Service coverage target (%)"],
+            default="Number of new sites", label_visibility="collapsed",
+        )
+        opt_mode = opt_mode or "Number of new sites"
+
+        INTERNAL_MAX_SITES_CAP = 25  # safety cap on the search, not user-facing — avoids runaway site counts
+
+        if opt_mode == "Number of new sites":
+            num_sites = st.number_input("Number of new sites to open", min_value=1, max_value=50, value=5, step=1)
+            target_pct, max_sites_cap, mode_key = None, None, "num_sites"
+        else:
+            target_pct = st.number_input("Target % of demand to serve", min_value=1.0,
+                                          max_value=100.0, value=80.0, step=1.0)
+            num_sites, mode_key = None, "service_target"
+            max_sites_cap = INTERNAL_MAX_SITES_CAP
+
+        st.markdown("**Service coverage — desired time & travel capacity**")
+        col_a, col_b = st.columns(2)
+        with col_a:
+            service_time_value = st.number_input("Desired service time", min_value=0.1, value=1.0, step=0.5)
+        with col_b:
+            service_time_unit = st.selectbox("Unit", ["Days", "Hours"])
+
+        miles_per_day = st.number_input("Last-mile daily travel capacity (miles/day)", min_value=50, max_value=1000,
+                                         value=400, step=50,
+                                         help="Assumption: how far a delivery truck can realistically travel in one day. "
+                                              "This becomes a REAL hard constraint on the model — a customer beyond "
+                                              "this distance from every DC is marked Unserved, not silently assigned "
+                                              "to whichever facility happens to be nearest.")
+
+        service_radius_km, service_radius_miles = compute_service_radius(service_time_value, service_time_unit, miles_per_day)
+        st.caption(f"→ Effective service radius: **{service_radius_km:,.0f} km** ({service_radius_miles:,.0f} miles)")
+
+        st.session_state.include_existing = st.checkbox(
+            "Include existing sites in this run?", value=st.session_state.include_existing,
+            help="Uncheck to run a pure greenfield analysis, ignoring the Existing Facilities table entirely."
+        )
+
+        st.divider()
+        st.markdown("### 💾 Save current scenario")
+
+        scenario_name = st.text_input("Scenario name", key="scenario_name_input", placeholder="e.g. Baseline 2026")
+        is_baseline_checkbox = st.checkbox("Consider this scenario as baseline?", key="is_baseline_checkbox")
+
+        sc_col1, sc_col2 = st.columns(2)
+        with sc_col1:
+            save_scenario_clicked = st.button("💾 Save", width="stretch")
+        with sc_col2:
+            clear_scenario_clicked = st.button("🗑️ Clear inputs", width="stretch")
+
+        if save_scenario_clicked:
+            if not scenario_name.strip():
+                st.warning("Give the scenario a name before saving.")
+            else:
+                snapshot = {
+                    "products_df": st.session_state.products_df.copy(),
+                    "demand_df": st.session_state.demand_df.copy(),
+                    "existing_df": st.session_state.existing_df.copy(),
+                    "model_uom": active_uom,
+                    "include_existing": st.session_state.include_existing,
+                    "service_time_value": service_time_value,
+                    "service_time_unit": service_time_unit,
+                    "miles_per_day": miles_per_day,
+                    "service_radius_km": service_radius_km,
+                    "opt_mode": opt_mode,
+                    "num_sites": num_sites,
+                    "target_pct": target_pct,
+                    "max_sites_cap": max_sites_cap,
+                    "is_baseline": is_baseline_checkbox,
+                    "summary": st.session_state.get("opt_summary"),
+                    "selected_df": st.session_state.get("selected_df"),
+                    "run_demand_df": st.session_state.get("run_demand_df"),
+                }
+                st.session_state.scenarios[scenario_name.strip()] = snapshot
+                if is_baseline_checkbox:
+                    st.session_state.baseline_scenario = scenario_name.strip()
+                st.success(f"Scenario '{scenario_name.strip()}' saved" +
+                           (" as baseline." if is_baseline_checkbox else "."))
+                st.rerun()
+
+        if clear_scenario_clicked:
+            st.session_state.demand_df = EMPTY_DEMAND.copy()
+            st.session_state.products_df = EMPTY_PRODUCTS.copy()
+            st.session_state.existing_df = EMPTY_EXISTING.copy()
+            for k in ["selected_df", "opt_summary", "run_demand_df"]:
+                st.session_state.pop(k, None)
+            st.session_state["view"] = "input"
+            st.success("Inputs cleared — ready for a new scenario.")
             st.rerun()
 
-    if clear_scenario_clicked:
-        st.session_state.demand_df = EMPTY_DEMAND.copy()
-        st.session_state.products_df = EMPTY_PRODUCTS.copy()
-        st.session_state.existing_df = EMPTY_EXISTING.copy()
-        for k in ["selected_df", "opt_summary", "run_demand_df"]:
-            st.session_state.pop(k, None)
-        st.session_state["view"] = "input"
-        st.success("Inputs cleared — ready for a new scenario.")
-        st.rerun()
 
 # =========================================================================
 # INPUT VIEW
@@ -897,7 +1027,7 @@ elif st.session_state.view == "compare":
 # =========================================================================
 # RESULTS VIEW
 # =========================================================================
-else:
+elif st.session_state.view == "results":
     _step_indicator("results")
     if st.button("⬅  Back to Input"):
         st.session_state["view"] = "input"
