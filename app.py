@@ -113,7 +113,7 @@ st.markdown("""<div class="hero">
 
 
 def _step_indicator(current: str):
-    steps = [("data", "① Data & Settings"), ("results", "② Results & Analysis")]
+    steps = [("data", "① Data & Settings"), ("compare", "📊 Compare Scenarios"), ("results", "② Results & Analysis")]
     pills = "".join(
         f'<span class="step-pill{" active" if key == current else ""}">{label}</span>'
         for key, label in steps
@@ -178,12 +178,59 @@ with st.sidebar:
     with st.expander("🤖 GenAI settings (optional)"):
         st.session_state.api_key = st.text_input(
             "Anthropic API key", value=st.session_state.api_key, type="password",
-            help="Powers the basefile copilot and scenario comparison assistant below. "
-                 "Your key is kept only in this session, never saved to disk. Get one at console.anthropic.com."
+            help="Powers the basefile copilot and the natural-language scenario chat below. "
+                 "Your key is kept only in this session, never saved to disk. Get one at console.anthropic.com. "
+                 "NOT required for the 'Compare All Scenarios' button — that works free, with no key.",
         )
         if not st.session_state.api_key:
-            st.caption("Without a key, the rest of the app works normally — only the AI-assisted features are disabled.")
+            st.caption("Optional — the free 'Compare All Scenarios' button below doesn't need this.")
 
+    st.markdown("""<div style="background:#0B3D91; border-radius:12px; padding:12px 14px; margin-bottom:12px;">
+        <span style="color:#F5C518; font-weight:800; font-size:15px;">💾 Saved Scenarios</span>
+        </div>""", unsafe_allow_html=True)
+
+    n_scenarios = len(st.session_state.scenarios)
+    n_runnable = len([s for s in st.session_state.scenarios.values() if s.get("summary")])
+
+    if n_scenarios == 0:
+        st.caption("No scenarios saved yet. Run the optimizer, then use 'Save current scenario' below to start comparing.")
+    else:
+        for name, snap in list(st.session_state.scenarios.items()):
+            label = f"⭐ **{name}**" if name == st.session_state.baseline_scenario else f"**{name}**"
+            st.markdown(label)
+            if snap.get("summary"):
+                s = snap["summary"]
+                wavg = s.get("weighted_avg_distance_km")
+                wavg_txt = f" · {wavg*0.621371:.0f} mi avg" if wavg is not None else ""
+                st.caption(f"{s['sites_selected']} sites · {s['final_coverage_pct']}% coverage{wavg_txt}")
+            else:
+                st.caption("Inputs only — not yet run")
+            lc1, lc2 = st.columns(2)
+            with lc1:
+                if st.button("Load", key=f"load_{name}", width="stretch"):
+                    st.session_state.demand_df = snap["demand_df"].copy()
+                    st.session_state.products_df = snap["products_df"].copy()
+                    st.session_state.existing_df = snap["existing_df"].copy()
+                    st.session_state.include_existing = snap["include_existing"]
+                    st.session_state["view"] = "input"
+                    st.rerun()
+            with lc2:
+                if st.button("Delete", key=f"delete_{name}", width="stretch"):
+                    del st.session_state.scenarios[name]
+                    if st.session_state.baseline_scenario == name:
+                        st.session_state.baseline_scenario = None
+                    st.rerun()
+
+        st.markdown("")
+        if st.button("📊 Compare All Scenarios", type="primary", width="stretch",
+                      disabled=n_runnable < 2,
+                      help=None if n_runnable >= 2 else "Save at least 2 scenarios with a completed run to compare."):
+            st.session_state["view"] = "compare"
+            st.rerun()
+        if n_runnable < 2:
+            st.caption(f"{n_runnable}/2 scenarios with completed runs — free, no API key needed.")
+
+    st.divider()
     st.markdown("### ⚙️ Model settings")
 
     uom_choice = st.selectbox("Unit of measure for this model", UOM_OPTIONS,
@@ -235,7 +282,7 @@ with st.sidebar:
     )
 
     st.divider()
-    st.markdown("### 💾 Scenarios")
+    st.markdown("### 💾 Save current scenario")
 
     scenario_name = st.text_input("Scenario name", key="scenario_name_input", placeholder="e.g. Baseline 2026")
     is_baseline_checkbox = st.checkbox("Consider this scenario as baseline?", key="is_baseline_checkbox")
@@ -274,6 +321,7 @@ with st.sidebar:
                 st.session_state.baseline_scenario = scenario_name.strip()
             st.success(f"Scenario '{scenario_name.strip()}' saved" +
                        (" as baseline." if is_baseline_checkbox else "."))
+            st.rerun()
 
     if clear_scenario_clicked:
         st.session_state.demand_df = EMPTY_DEMAND.copy()
@@ -284,32 +332,6 @@ with st.sidebar:
         st.session_state["view"] = "input"
         st.success("Inputs cleared — ready for a new scenario.")
         st.rerun()
-
-    if st.session_state.scenarios:
-        with st.expander(f"📁 Saved scenarios ({len(st.session_state.scenarios)})"):
-            for name, snap in list(st.session_state.scenarios.items()):
-                label = f"⭐ {name}" if name == st.session_state.baseline_scenario else name
-                st.markdown(f"**{label}**")
-                if snap.get("summary"):
-                    st.caption(f"{snap['summary']['sites_selected']} sites · "
-                               f"{snap['summary']['final_coverage_pct']}% coverage")
-                else:
-                    st.caption("Inputs only — not yet run")
-                lc1, lc2 = st.columns(2)
-                with lc1:
-                    if st.button("Load", key=f"load_{name}", width="stretch"):
-                        st.session_state.demand_df = snap["demand_df"].copy()
-                        st.session_state.products_df = snap["products_df"].copy()
-                        st.session_state.existing_df = snap["existing_df"].copy()
-                        st.session_state.include_existing = snap["include_existing"]
-                        st.session_state["view"] = "input"
-                        st.rerun()
-                with lc2:
-                    if st.button("Delete", key=f"delete_{name}", width="stretch"):
-                        del st.session_state.scenarios[name]
-                        if st.session_state.baseline_scenario == name:
-                            st.session_state.baseline_scenario = None
-                        st.rerun()
 
 # =========================================================================
 # INPUT VIEW
@@ -589,6 +611,102 @@ if st.session_state.view == "input":
         st.session_state["run_cand_df"] = cand_df
         st.session_state["view"] = "results"
         st.rerun()
+
+elif st.session_state.view == "compare":
+    _step_indicator("compare")
+    if st.button("⬅  Back"):
+        st.session_state["view"] = "input"
+        st.rerun()
+
+    st.markdown('<div class="section-title">📊 Compare All Scenarios</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-sub">Free comparison across every saved scenario with a completed run — '
+                 'no API key needed. Baseline is marked ⭐.</div>', unsafe_allow_html=True)
+
+    runnable = {name: snap for name, snap in st.session_state.scenarios.items() if snap.get("summary")}
+
+    if len(runnable) < 2:
+        st.info(f"You have {len(runnable)} scenario(s) with completed runs. Save at least 2 to compare "
+                "(sidebar → 💾 Save current scenario, after running the optimizer).")
+    else:
+        rows = []
+        for name, snap in runnable.items():
+            s = snap["summary"]
+            wavg = s.get("weighted_avg_distance_km")
+            rows.append({
+                "Scenario": name,
+                "Baseline": "⭐" if name == st.session_state.baseline_scenario else "",
+                "Sites opened": s["sites_selected"],
+                "Baseline coverage %": s["baseline_coverage_pct"],
+                "Final coverage %": s["final_coverage_pct"],
+                "Weighted avg distance (mi)": round(wavg * 0.621371, 1) if wavg is not None else None,
+                "Total demand": s["total_demand"],
+            })
+        comp_df = pd.DataFrame(rows).set_index("Scenario")
+
+        st.dataframe(comp_df, width="stretch")
+
+        cc1, cc2 = st.columns(2)
+        with cc1:
+            st.markdown("**Final coverage % by scenario**")
+            st.bar_chart(comp_df[["Final coverage %"]])
+        with cc2:
+            st.markdown("**Weighted avg service distance (mi) by scenario**")
+            st.bar_chart(comp_df[["Weighted avg distance (mi)"]])
+
+        cc3, cc4 = st.columns(2)
+        with cc3:
+            st.markdown("**Sites opened by scenario**")
+            st.bar_chart(comp_df[["Sites opened"]])
+        with cc4:
+            if st.session_state.baseline_scenario and st.session_state.baseline_scenario in runnable:
+                st.markdown(f"**vs. baseline ({st.session_state.baseline_scenario})**")
+                base_cov = comp_df.loc[st.session_state.baseline_scenario, "Final coverage %"]
+                delta_df = (comp_df[["Final coverage %"]] - base_cov).rename(
+                    columns={"Final coverage %": "Coverage % vs baseline"})
+                st.bar_chart(delta_df)
+            else:
+                st.caption("Mark a scenario as baseline (when saving) to see delta comparisons here.")
+
+        csv_buffer = io.StringIO()
+        comp_df.to_csv(csv_buffer)
+        st.download_button("⬇ Download comparison (CSV)", csv_buffer.getvalue(),
+                            file_name="scenario_comparison.csv", mime="text/csv")
+
+    st.divider()
+    st.markdown('<div class="section-title">💬 Ask the AI assistant (optional)</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-sub">For natural-language questions about your scenarios. The comparisons '
+                 'above are free and need no key — this is an optional extra for phrasing your own questions.'
+                 '</div>', unsafe_allow_html=True)
+
+    if len(runnable) < 2:
+        st.caption("Save at least 2 scenarios with completed runs to use this too.")
+    elif not st.session_state.api_key:
+        st.caption("Enter an Anthropic API key in the sidebar (🤖 GenAI settings) to enable this — optional, "
+                   "the comparisons above already work without it.")
+    else:
+        for msg in st.session_state.chat_history:
+            st.chat_message(msg["role"]).write(msg["content"])
+
+        user_q = st.chat_input("e.g. 'Which scenario has the best coverage per site opened?'")
+        if user_q:
+            st.session_state.chat_history.append({"role": "user", "content": user_q})
+            intent, err = classify_comparison_intent(st.session_state.api_key, list(runnable.keys()), user_q)
+            if err:
+                reply = f"Couldn't reach the AI classifier ({err}) — see the comparison table and charts above."
+            elif intent == "coverage_comparison":
+                reply = "See the 'Final coverage % by scenario' chart above."
+            elif intent == "distance_comparison":
+                reply = "See the 'Weighted avg service distance' chart above."
+            elif intent == "sites_comparison":
+                reply = "See the 'Sites opened by scenario' chart above."
+            else:
+                reply = "See the full comparison table above for all metrics side by side."
+            st.session_state.chat_history.append({"role": "assistant", "content": reply})
+            st.rerun()
+
+        if st.session_state.chat_history and st.button("Clear chat"):
+            st.session_state.chat_history = []
+            st.rerun()
 
 # =========================================================================
 # RESULTS VIEW
