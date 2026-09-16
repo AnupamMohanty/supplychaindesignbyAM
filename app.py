@@ -9,9 +9,14 @@ from streamlit_folium import st_folium
 
 from optimizer import (
     DEFAULT_SCORING_CRITERIA,
+    TARGET_SCHEMAS,
+    apply_column_mapping,
     assign_customers_to_facilities,
     auto_grid_step_deg,
     build_data_sources_workbook,
+    build_mapping_prompt,
+    call_claude_api,
+    classify_comparison_intent,
     compute_service_radius,
     compute_weighted_scores,
     coordinates_ready,
@@ -21,7 +26,8 @@ from optimizer import (
     greedy_select_sites,
     lookup_reference_scores,
     needs_geocoding,
-    reverse_geocode_names,
+    parse_mapping_response,
+    reverse_geocode_details,
     suggest_best_next_location,
     validate_demand_df,
     validate_existing_df,
@@ -77,6 +83,19 @@ div.stButton > button[kind="primary"]:hover { filter: brightness(1.05); }
     display: inline-block; background: #EAF2FB; color: #0B3D91;
     font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px;
 }
+.step-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: #FFFFFF; border: 1px solid #E7ECF5; border-radius: 20px;
+    padding: 6px 14px; font-size: 13px; font-weight: 600; color: #4A5A78;
+    margin-right: 8px; margin-bottom: 16px;
+}
+.step-pill.active { background: #0B3D91; color: #FFFFFF; border-color: #0B3D91; }
+div[data-testid="stExpander"] { border: 1px solid #E7ECF5; border-radius: 12px; }
+div[data-testid="stChatMessage"] { border-radius: 12px; }
+.app-footer {
+    text-align: center; color: #9AA7C0; font-size: 12px; margin-top: 32px;
+    padding-top: 16px; border-top: 1px solid #E7ECF5;
+}
 </style>""", unsafe_allow_html=True)
 
 st.markdown("""<div class="hero">
@@ -84,6 +103,15 @@ st.markdown("""<div class="hero">
     <p>Greenfield facility location optimizer — demand, network, and site scoring in one flow</p>
     <span class="badge">GREENFIELD · MCLP ENGINE</span>
 </div>""", unsafe_allow_html=True)
+
+
+def _step_indicator(current: str):
+    steps = [("data", "① Data & Settings"), ("results", "② Results & Analysis")]
+    pills = "".join(
+        f'<span class="step-pill{" active" if key == current else ""}">{label}</span>'
+        for key, label in steps
+    )
+    st.markdown(pills, unsafe_allow_html=True)
 
 # ---------- Empty-table schemas (no forced sample data) ----------
 EMPTY_PRODUCTS = pd.DataFrame(columns=["product_id", "product_name"])
@@ -103,6 +131,10 @@ defaults = {
     "model_uom": "Orders",
     "model_uom_custom": "",
     "scoring_weights": {c["key"]: c["default_weight"] for c in DEFAULT_SCORING_CRITERIA},
+    "api_key": "",
+    "scenarios": {},
+    "baseline_scenario": None,
+    "chat_history": [],
 }
 for k, v in defaults.items():
     if k not in st.session_state:
@@ -136,6 +168,15 @@ def _sample_demand():
 
 # ---------- Sidebar: model-wide settings + optimization controls ----------
 with st.sidebar:
+    with st.expander("🤖 GenAI settings (optional)"):
+        st.session_state.api_key = st.text_input(
+            "Anthropic API key", value=st.session_state.api_key, type="password",
+            help="Powers the basefile copilot and scenario comparison assistant below. "
+                 "Your key is kept only in this session, never saved to disk. Get one at console.anthropic.com."
+        )
+        if not st.session_state.api_key:
+            st.caption("Without a key, the rest of the app works normally — only the AI-assisted features are disabled.")
+
     st.markdown("### ⚙️ Model settings")
 
     uom_choice = st.selectbox("Unit of measure for this model", UOM_OPTIONS,
@@ -186,10 +227,160 @@ with st.sidebar:
         help="Uncheck to run a pure greenfield analysis, ignoring the Existing Facilities table entirely."
     )
 
+    st.divider()
+    st.markdown("### 💾 Scenarios")
+
+    scenario_name = st.text_input("Scenario name", key="scenario_name_input", placeholder="e.g. Baseline 2026")
+    is_baseline_checkbox = st.checkbox("Consider this scenario as baseline?", key="is_baseline_checkbox")
+
+    sc_col1, sc_col2 = st.columns(2)
+    with sc_col1:
+        save_scenario_clicked = st.button("💾 Save", width="stretch")
+    with sc_col2:
+        clear_scenario_clicked = st.button("🗑️ Clear inputs", width="stretch")
+
+    if save_scenario_clicked:
+        if not scenario_name.strip():
+            st.warning("Give the scenario a name before saving.")
+        else:
+            snapshot = {
+                "products_df": st.session_state.products_df.copy(),
+                "demand_df": st.session_state.demand_df.copy(),
+                "existing_df": st.session_state.existing_df.copy(),
+                "model_uom": active_uom,
+                "include_existing": st.session_state.include_existing,
+                "service_time_value": service_time_value,
+                "service_time_unit": service_time_unit,
+                "miles_per_day": miles_per_day,
+                "service_radius_km": service_radius_km,
+                "opt_mode": opt_mode,
+                "num_sites": num_sites,
+                "target_pct": target_pct,
+                "max_sites_cap": max_sites_cap,
+                "is_baseline": is_baseline_checkbox,
+                "summary": st.session_state.get("opt_summary"),
+                "selected_df": st.session_state.get("selected_df"),
+                "run_demand_df": st.session_state.get("run_demand_df"),
+            }
+            st.session_state.scenarios[scenario_name.strip()] = snapshot
+            if is_baseline_checkbox:
+                st.session_state.baseline_scenario = scenario_name.strip()
+            st.success(f"Scenario '{scenario_name.strip()}' saved" +
+                       (" as baseline." if is_baseline_checkbox else "."))
+
+    if clear_scenario_clicked:
+        st.session_state.demand_df = EMPTY_DEMAND.copy()
+        st.session_state.products_df = EMPTY_PRODUCTS.copy()
+        st.session_state.existing_df = EMPTY_EXISTING.copy()
+        for k in ["selected_df", "opt_summary", "run_demand_df"]:
+            st.session_state.pop(k, None)
+        st.session_state["view"] = "input"
+        st.success("Inputs cleared — ready for a new scenario.")
+        st.rerun()
+
+    if st.session_state.scenarios:
+        with st.expander(f"📁 Saved scenarios ({len(st.session_state.scenarios)})"):
+            for name, snap in list(st.session_state.scenarios.items()):
+                label = f"⭐ {name}" if name == st.session_state.baseline_scenario else name
+                st.markdown(f"**{label}**")
+                if snap.get("summary"):
+                    st.caption(f"{snap['summary']['sites_selected']} sites · "
+                               f"{snap['summary']['final_coverage_pct']}% coverage")
+                else:
+                    st.caption("Inputs only — not yet run")
+                lc1, lc2 = st.columns(2)
+                with lc1:
+                    if st.button("Load", key=f"load_{name}", width="stretch"):
+                        st.session_state.demand_df = snap["demand_df"].copy()
+                        st.session_state.products_df = snap["products_df"].copy()
+                        st.session_state.existing_df = snap["existing_df"].copy()
+                        st.session_state.include_existing = snap["include_existing"]
+                        st.session_state["view"] = "input"
+                        st.rerun()
+                with lc2:
+                    if st.button("Delete", key=f"delete_{name}", width="stretch"):
+                        del st.session_state.scenarios[name]
+                        if st.session_state.baseline_scenario == name:
+                            st.session_state.baseline_scenario = None
+                        st.rerun()
+
 # =========================================================================
 # INPUT VIEW
 # =========================================================================
 if st.session_state.view == "input":
+    _step_indicator("data")
+
+    with st.container(border=True):
+        st.markdown('<div class="section-title">🤖 Load a Basefile (AI-Assisted)</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-sub">Have shipment history, transactional data, or a forecast instead of '
+                     'a ready-made table? Upload it here and tell the copilot how to map it onto one of the three '
+                     'tables below.</div>', unsafe_allow_html=True)
+
+        basefile = st.file_uploader("Upload shipments / transactions / forecast (CSV or Excel)",
+                                     type=["csv", "xlsx"], key="basefile_upload")
+
+        if basefile is not None:
+            try:
+                raw_df = pd.read_csv(basefile) if basefile.name.endswith(".csv") else pd.read_excel(basefile)
+                st.dataframe(raw_df.head(5), width="stretch")
+
+                bc1, bc2 = st.columns([1, 2])
+                with bc1:
+                    target_table = st.selectbox("Map this file to", list(TARGET_SCHEMAS.keys()), key="basefile_target")
+                with bc2:
+                    user_instruction = st.text_input(
+                        "Tell the copilot how to map it (optional)", key="basefile_instruction",
+                        placeholder="e.g. origin_city and origin_state are the customer location, weight_kg is demand",
+                    )
+
+                if not st.session_state.api_key:
+                    st.info("Enter an Anthropic API key in the sidebar (🤖 GenAI settings) to enable AI-assisted mapping.")
+                transform_clicked = st.button("🪄 Transform with AI", disabled=not st.session_state.api_key)
+
+                if transform_clicked:
+                    with st.spinner("Copilot is mapping your file..."):
+                        sys_p, user_p = build_mapping_prompt(
+                            target_table, list(raw_df.columns), raw_df.head(5).to_string(), user_instruction
+                        )
+                        response, err = call_claude_api(st.session_state.api_key, sys_p, user_p)
+                    if err:
+                        st.error(f"Copilot error: {err}")
+                    else:
+                        parsed, perr = parse_mapping_response(response)
+                        if perr:
+                            st.error(f"Couldn't understand the copilot's response: {perr}")
+                        else:
+                            transformed, aerr = apply_column_mapping(raw_df, parsed["mapping"])
+                            if aerr:
+                                st.error(f"Couldn't apply the mapping: {aerr}")
+                            else:
+                                st.session_state["_pending_transform"] = {
+                                    "target_table": target_table, "df": transformed, "notes": parsed.get("notes", ""),
+                                    "unmapped": parsed.get("unmapped_target_columns", []),
+                                }
+
+                pending = st.session_state.get("_pending_transform")
+                if pending:
+                    st.success(f"Proposed mapping for **{pending['target_table']}**:")
+                    if pending["notes"]:
+                        st.caption(pending["notes"])
+                    if pending["unmapped"]:
+                        st.warning(f"Not mapped (fill in manually after applying): {', '.join(pending['unmapped'])}")
+                    st.dataframe(pending["df"].head(10), width="stretch")
+                    pc1, pc2 = st.columns(2)
+                    with pc1:
+                        if st.button("✅ Apply to " + pending["target_table"], width="stretch"):
+                            target_key = {"Customer Demand": "demand_df", "Products": "products_df",
+                                          "Existing Facilities": "existing_df"}[pending["target_table"]]
+                            st.session_state[target_key] = pending["df"]
+                            del st.session_state["_pending_transform"]
+                            st.rerun()
+                    with pc2:
+                        if st.button("Discard", width="stretch"):
+                            del st.session_state["_pending_transform"]
+                            st.rerun()
+            except Exception as e:
+                st.error(f"Couldn't read that file: {e}")
 
     with st.container(border=True):
         st.markdown('<div class="section-title">📦 1. Products</div>', unsafe_allow_html=True)
@@ -358,7 +549,9 @@ if st.session_state.view == "input":
         # DC naming via reverse geocoding
         if len(selected_df) > 0:
             with st.spinner("Naming new sites..."):
-                selected_df["dc_name"] = reverse_geocode_names(selected_df)
+                details = reverse_geocode_details(selected_df)
+                selected_df["dc_name"] = [d["name"] for d in details]
+                selected_df["dc_state"] = [d["state"] for d in details]
                 selected_df["facility_name"] = "New DC – " + selected_df["dc_name"]
 
         # Customer -> nearest facility assignment
@@ -394,6 +587,7 @@ if st.session_state.view == "input":
 # RESULTS VIEW
 # =========================================================================
 else:
+    _step_indicator("results")
     if st.button("⬅  Back to Input"):
         st.session_state["view"] = "input"
         st.rerun()
@@ -497,10 +691,15 @@ else:
             existing_layer.add_to(m)
 
         new_layer = folium.FeatureGroup(name="New sites (recommended)")
+        triangle_svg = (
+            '<svg width="28" height="26" viewBox="0 0 28 26" xmlns="http://www.w3.org/2000/svg">'
+            '<polygon points="14,1 27,25 1,25" fill="#0B6B2C" stroke="#053D18" stroke-width="1.5"/>'
+            '</svg>'
+        )
         for i, row in selected_df.iterrows():
             folium.Marker(
                 [row["lat"], row["lon"]],
-                icon=folium.Icon(color="orange", icon="warehouse", prefix="fa"),
+                icon=folium.DivIcon(html=triangle_svg, icon_size=(28, 26), icon_anchor=(14, 20)),
                 popup=(f"<b>{row.get('dc_name', row['site_id'])}</b> (opened #{i+1})<br>"
                        f"Incremental demand covered: {row['incremental_demand_covered']:.0f} {run_uom}<br>"
                        f"Cumulative coverage: {row['cumulative_coverage_pct']}%<br>"
@@ -635,9 +834,14 @@ else:
         if len(low_scorers) > 0:
             st.markdown("**⚠️ Locations below score threshold (7.0) — suggested next steps**")
             for _, row in low_scorers.iterrows():
+                site_state = None
+                site_match = selected_df[selected_df["dc_name"] == row["dc_name"]]
+                if len(site_match) > 0 and "dc_state" in site_match.columns:
+                    site_state = site_match.iloc[0]["dc_state"]
                 suggestion = suggest_best_next_location(
                     row["dc_name"], row, new_weights,
                     st.session_state.get("run_cand_df"), selected_df, run_service_radius_km,
+                    state=site_state,
                 )
                 st.warning(suggestion)
 
@@ -682,3 +886,77 @@ else:
                           "decide whether to substitute a nearby alternative.")
 
         st.markdown(f'<div class="rec-card">{"<br><br>".join(rec_lines)}</div>', unsafe_allow_html=True)
+
+    # =====================================================================
+    # SCENARIO ASSISTANT — AI-assisted comparison across saved scenarios
+    # =====================================================================
+    st.divider()
+    st.markdown('<div class="section-title">💬 Scenario Assistant</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-sub">Ask questions comparing your saved scenarios — coverage, service '
+                 'distance, sites opened, cost. Save at least 2 scenarios (with a completed run) to compare.'
+                 '</div>', unsafe_allow_html=True)
+
+    runnable_scenarios = {name: snap for name, snap in st.session_state.scenarios.items() if snap.get("summary")}
+
+    if len(runnable_scenarios) < 2:
+        st.info(f"You have {len(runnable_scenarios)} scenario(s) with completed runs saved. Save at least 2 "
+                "(use 'Save' in the sidebar after running each) to unlock comparisons.")
+    elif not st.session_state.api_key:
+        st.info("Enter an Anthropic API key in the sidebar (🤖 GenAI settings) to enable the comparison assistant.")
+    else:
+        for msg in st.session_state.chat_history:
+            st.chat_message(msg["role"]).write(msg["content"])
+
+        user_q = st.chat_input("e.g. 'Compare coverage across my scenarios'")
+        if user_q:
+            st.session_state.chat_history.append({"role": "user", "content": user_q})
+            intent, err = classify_comparison_intent(st.session_state.api_key, list(runnable_scenarios.keys()), user_q)
+
+            comp_rows = []
+            for name, snap in runnable_scenarios.items():
+                s = snap["summary"]
+                wavg = s.get("weighted_avg_distance_km")
+                comp_rows.append({
+                    "Scenario": ("⭐ " if name == st.session_state.baseline_scenario else "") + name,
+                    "Sites opened": s["sites_selected"],
+                    "Final coverage %": s["final_coverage_pct"],
+                    "Weighted avg distance (mi)": round(wavg * 0.621371, 1) if wavg is not None else None,
+                })
+            comp_df = pd.DataFrame(comp_rows).set_index("Scenario")
+
+            if err:
+                reply = f"Couldn't reach the AI classifier ({err}) — showing the full comparison table instead."
+                intent = "summary_table"
+            elif intent == "coverage_comparison":
+                reply = "Here's coverage % across your scenarios:"
+            elif intent == "distance_comparison":
+                reply = "Here's weighted average service distance across your scenarios:"
+            elif intent == "sites_comparison":
+                reply = "Here's sites opened across your scenarios:"
+            else:
+                reply = "Here's a full comparison across your scenarios:"
+
+            st.session_state.chat_history.append({"role": "assistant", "content": reply})
+            st.session_state["_last_comparison_intent"] = intent
+            st.session_state["_last_comparison_df"] = comp_df
+            st.rerun()
+
+        if "_last_comparison_df" in st.session_state:
+            comp_df = st.session_state["_last_comparison_df"]
+            intent = st.session_state.get("_last_comparison_intent", "summary_table")
+            if intent == "coverage_comparison":
+                st.bar_chart(comp_df[["Final coverage %"]])
+            elif intent == "distance_comparison":
+                st.bar_chart(comp_df[["Weighted avg distance (mi)"]])
+            elif intent == "sites_comparison":
+                st.bar_chart(comp_df[["Sites opened"]])
+            else:
+                st.dataframe(comp_df, width="stretch")
+
+        if st.session_state.chat_history and st.button("Clear chat"):
+            st.session_state.chat_history = []
+            st.session_state.pop("_last_comparison_df", None)
+            st.rerun()
+
+st.markdown('<div class="app-footer">Supply Chain Design by AM · Greenfield MCLP engine · '
+            'Reference research current as of Sept 2026</div>', unsafe_allow_html=True)
