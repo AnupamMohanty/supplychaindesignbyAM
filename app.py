@@ -152,6 +152,14 @@ div[data-testid="stChatMessage"] { border-radius: 12px; }
 .solution-title { font-size: 17px; font-weight: 800; color: #0B3D91; margin: 12px 0 4px 0; }
 .solution-title.muted { color: #6B7A99; }
 .solution-desc { font-size: 13px; color: #5A6B8C; line-height: 1.5; }
+.wireframe-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 12px;
+}
+.wireframe-box {
+    background: #FFFFFF; border: 1.5px dashed #C3CEE0; border-radius: 6px;
+    padding: 8px 6px; font-size: 10px; font-weight: 700; color: #8C99B8;
+    text-align: center; letter-spacing: 0.2px;
+}
 </style>""", unsafe_allow_html=True)
 
 MKS_ICON_DESIGN = ('<svg viewBox="0 0 64 64" width="52" height="52"><circle cx="32" cy="24" r="14" fill="#0B3D91"/>'
@@ -422,8 +430,13 @@ if st.session_state.view == "landing":
             {MKS_ICON_FLOW}
             <span class="status-badge-dev"><span class="mks-spinner"></span>IN DEVELOPMENT</span>
             <div class="solution-title muted">2. Product Flow Optimization</div>
-            <div class="solution-desc">Optimizing how product physically moves through the network — routing,
-            mode selection, and flow-cost minimization across the supply chain.</div>
+            <div class="solution-desc">Optimizing how product physically flows through the network.</div>
+            <div class="wireframe-grid">
+                <div class="wireframe-box">Current Supply<br>Chain Network</div>
+                <div class="wireframe-box">Costs</div>
+                <div class="wireframe-box">Service<br>Constraints</div>
+                <div class="wireframe-box">Scenarios</div>
+            </div>
         </div>""", unsafe_allow_html=True)
         st.button("Coming soon", disabled=True, width="stretch", key="launch_flow")
 
@@ -432,8 +445,13 @@ if st.session_state.view == "landing":
             {MKS_ICON_INVENTORY}
             <span class="status-badge-dev"><span class="mks-spinner"></span>IN DEVELOPMENT</span>
             <div class="solution-title muted">3. Inventory Optimization &amp; Classification</div>
-            <div class="solution-desc">Right-sizing inventory and classifying SKUs (ABC/XYZ and beyond) to
-            balance service levels against working capital.</div>
+            <div class="solution-desc">Right-sizing inventory to balance service levels against working capital.</div>
+            <div class="wireframe-grid">
+                <div class="wireframe-box">Safety Stock<br>Strategy</div>
+                <div class="wireframe-box">Cycle Stock</div>
+                <div class="wireframe-box">Replenishment<br>Policies</div>
+                <div class="wireframe-box">Warehousing<br>Right-Sizing</div>
+            </div>
         </div>""", unsafe_allow_html=True)
         st.button("Coming soon", disabled=True, width="stretch", key="launch_inventory")
 
@@ -442,8 +460,13 @@ if st.session_state.view == "landing":
             {MKS_ICON_TWIN}
             <span class="status-badge-dev"><span class="mks-spinner"></span>IN DEVELOPMENT</span>
             <div class="solution-title muted">4. Supply Chain Digital Twin</div>
-            <div class="solution-desc">A living simulation of the end-to-end network — stress-test disruptions
-            and policy changes before committing to them in the real world.</div>
+            <div class="solution-desc">A living simulation of the end-to-end network.</div>
+            <div class="wireframe-grid">
+                <div class="wireframe-box">Cost<br>Breakdown</div>
+                <div class="wireframe-box">Level 1 KPIs</div>
+                <div class="wireframe-box">Level 2 KPIs</div>
+                <div class="wireframe-box">What-If<br>Simulations</div>
+            </div>
         </div>""", unsafe_allow_html=True)
         st.button("Coming soon", disabled=True, width="stretch", key="launch_twin")
 
@@ -492,10 +515,10 @@ if st.session_state.view != "landing":
                 "Anthropic API key", value=st.session_state.api_key, type="password",
                 help="Powers the basefile copilot and the natural-language scenario chat below. "
                      "Your key is kept only in this session, never saved to disk. Get one at console.anthropic.com. "
-                     "NOT required for the 'Compare All Scenarios' button — that works free, with no key.",
+                     "NOT required for 'Compare Selected' — that works free, with no key.",
             )
             if not st.session_state.api_key:
-                st.caption("Optional — the free 'Compare All Scenarios' button below doesn't need this.")
+                st.caption("Optional — the free 'Compare Selected' button below doesn't need this.")
 
         st.markdown("""<div style="background:#0B3D91; border-radius:12px; padding:12px 14px; margin-bottom:12px;">
             <span style="color:#F5C518; font-weight:800; font-size:15px;">💾 Saved Scenarios</span>
@@ -503,14 +526,34 @@ if st.session_state.view != "landing":
 
         n_scenarios = len(st.session_state.scenarios)
         n_runnable = len([s for s in st.session_state.scenarios.values() if s.get("summary")])
+        if "selected_for_compare" not in st.session_state:
+            st.session_state.selected_for_compare = set()
+        # Drop selections for scenarios that no longer exist or were deleted
+        st.session_state.selected_for_compare &= set(st.session_state.scenarios.keys())
 
         if n_scenarios == 0:
             st.caption("No scenarios saved yet. Run the optimizer, then use 'Save current scenario' below to start comparing.")
         else:
             for name, snap in list(st.session_state.scenarios.items()):
                 label = f"⭐ **{name}**" if name == st.session_state.baseline_scenario else f"**{name}**"
-                st.markdown(label)
-                if snap.get("summary"):
+                is_runnable = bool(snap.get("summary"))
+
+                row_col1, row_col2 = st.columns([0.15, 0.85])
+                with row_col1:
+                    if is_runnable:
+                        checked = st.checkbox("select", key=f"select_cmp_{name}",
+                                               value=name in st.session_state.selected_for_compare,
+                                               label_visibility="collapsed")
+                        if checked:
+                            st.session_state.selected_for_compare.add(name)
+                        else:
+                            st.session_state.selected_for_compare.discard(name)
+                    else:
+                        st.write("")
+                with row_col2:
+                    st.markdown(label)
+
+                if is_runnable:
                     s = snap["summary"]
                     wavg = s.get("weighted_avg_distance_km")
                     wavg_txt = f" · {wavg*0.621371:.0f} mi avg" if wavg is not None else ""
@@ -529,18 +572,28 @@ if st.session_state.view != "landing":
                 with lc2:
                     if st.button("Delete", key=f"delete_{name}", width="stretch"):
                         del st.session_state.scenarios[name]
+                        st.session_state.selected_for_compare.discard(name)
                         if st.session_state.baseline_scenario == name:
                             st.session_state.baseline_scenario = None
                         st.rerun()
 
             st.markdown("")
-            if st.button("📊 Compare All Scenarios", type="primary", width="stretch",
+            n_selected = len(st.session_state.selected_for_compare)
+            if n_selected > 0:
+                compare_label = f"📊 Compare Selected ({n_selected})"
+            else:
+                compare_label = "📊 Compare All Scenarios"
+            if st.button(compare_label, type="primary", width="stretch",
                           disabled=n_runnable < 2,
-                          help=None if n_runnable >= 2 else "Save at least 2 scenarios with a completed run to compare."):
+                          help=("Check boxes above to compare a specific subset, or click with none checked to "
+                                "compare every saved scenario." if n_runnable >= 2
+                                else "Save at least 2 scenarios with a completed run to compare.")):
                 st.session_state["view"] = "compare"
                 st.rerun()
             if n_runnable < 2:
                 st.caption(f"{n_runnable}/2 scenarios with completed runs — free, no API key needed.")
+            elif n_selected == 1:
+                st.caption("Select at least one more scenario to compare a specific subset, or leave unchecked to compare all.")
 
         st.divider()
 
@@ -954,11 +1007,21 @@ elif st.session_state.view == "compare":
         st.session_state["view"] = "input"
         st.rerun()
 
-    st.markdown('<div class="section-title">📊 Compare All Scenarios</div>', unsafe_allow_html=True)
-    st.markdown('<div class="section-sub">Free comparison across every saved scenario with a completed run — '
-                 'no API key needed. Baseline is marked ⭐.</div>', unsafe_allow_html=True)
+    all_runnable = {name: snap for name, snap in st.session_state.scenarios.items() if snap.get("summary")}
+    selected_names = st.session_state.get("selected_for_compare", set()) & set(all_runnable.keys())
 
-    runnable = {name: snap for name, snap in st.session_state.scenarios.items() if snap.get("summary")}
+    if len(selected_names) >= 2:
+        runnable = {name: all_runnable[name] for name in all_runnable if name in selected_names}
+        st.markdown('<div class="section-title">📊 Compare Selected Scenarios</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="section-sub">Comparing your {len(runnable)} selected scenario(s) — free, no API '
+                     'key needed. Baseline is marked ⭐. Change your selection via the checkboxes in the sidebar.'
+                     '</div>', unsafe_allow_html=True)
+    else:
+        runnable = all_runnable
+        st.markdown('<div class="section-title">📊 Compare All Scenarios</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-sub">No specific selection made, so showing every saved scenario with a '
+                     'completed run — free, no API key needed. Check boxes in the sidebar to compare a specific '
+                     'subset instead.</div>', unsafe_allow_html=True)
 
     if len(runnable) < 2:
         st.info(f"You have {len(runnable)} scenario(s) with completed runs. Save at least 2 to compare "
