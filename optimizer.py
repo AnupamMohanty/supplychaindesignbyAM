@@ -209,16 +209,24 @@ def compute_weighted_avg_distance_km(demand_df: pd.DataFrame, facility_lat_lon_d
 
 def reverse_geocode_names(sites_df: pd.DataFrame) -> list:
     """Reverse-geocode each site's lat/lon into a human-readable name
-    (e.g. "Ashburn, Virginia, USA") using OpenStreetMap's free Nominatim
+    (e.g. "Ashburn, Virginia") using OpenStreetMap's free Nominatim
     service. Falls back to the site_id if a lookup fails, so naming never
-    blocks the rest of the app."""
+    blocks the rest of the app. See reverse_geocode_details() for a version
+    that also returns the state separately."""
+    return [d["name"] for d in reverse_geocode_details(sites_df)]
+
+
+def reverse_geocode_details(sites_df: pd.DataFrame) -> list:
+    """Like reverse_geocode_names, but returns a dict per site with the
+    display name AND the state separately (needed to look up a real
+    logistics-hub-city recommendation for that state)."""
     from geopy.geocoders import Nominatim
     from geopy.extra.rate_limiter import RateLimiter
 
     geolocator = Nominatim(user_agent="supply_chain_design_by_am", timeout=5)
     reverse = RateLimiter(geolocator.reverse, min_delay_seconds=1, max_retries=1, error_wait_seconds=1.0)
 
-    names = []
+    results = []
     for _, row in sites_df.iterrows():
         fallback = str(row.get("site_id", "DC"))
         try:
@@ -227,14 +235,16 @@ def reverse_geocode_names(sites_df: pd.DataFrame) -> list:
                 addr = location.raw["address"]
                 place = addr.get("city") or addr.get("town") or addr.get("village") or \
                     addr.get("county") or addr.get("suburb")
-                region = addr.get("state") or addr.get("region")
-                parts = [p for p in [place, region] if p]
-                names.append(", ".join(parts) if parts else fallback)
+                state = addr.get("state") or addr.get("region")
+                country = addr.get("country")
+                parts = [p for p in [place, state] if p]
+                results.append({"name": ", ".join(parts) if parts else fallback,
+                                 "state": state, "country": country})
             else:
-                names.append(fallback)
+                results.append({"name": fallback, "state": None, "country": None})
         except Exception:
-            names.append(fallback)
-    return names
+            results.append({"name": fallback, "state": None, "country": None})
+    return results
 
 
 def assign_customers_to_facilities(demand_df: pd.DataFrame, facilities_df: pd.DataFrame,
@@ -375,15 +385,57 @@ def build_data_sources_workbook() -> bytes:
     return buf.getvalue()
 
 
+# Real-world knowledge: for each US state, the metro/city most established as
+# a logistics/distribution hub (intermodal rail, highway junctions, major
+# air-cargo capacity), used to give a concrete named-city recommendation
+# instead of just flagging that a location scores low. Deliberately limited
+# to states where there's a clearly dominant, well-known logistics hub.
+STATE_LOGISTICS_HUBS = {
+    "Illinois": {"city": "Joliet / Elwood, IL", "rationale": "BNSF and Union Pacific intermodal terminals "
+                 "(CenterPoint Intermodal Center) just southwest of Chicago — one of the largest inland port "
+                 "complexes in North America."},
+    "Texas": {"city": "Dallas-Fort Worth, TX", "rationale": "I-35/I-20/I-30 junction, DFW Airport air-cargo hub, "
+              "1B+ SF of industrial inventory."},
+    "Ohio": {"city": "Columbus / Rickenbacker, OH", "rationale": "I-70/I-71 junction, Rickenbacker Intl "
+             "dedicated air-cargo airport, within a day's drive of 50%+ of the US/Canada population."},
+    "Georgia": {"city": "Atlanta, GA", "rationale": "Hartsfield-Jackson (busiest air-cargo airport in the "
+                "Southeast), I-20/I-75/I-85 junction, close to the Port of Savannah."},
+    "California": {"city": "Ontario / Inland Empire, CA", "rationale": "Adjacent to the Ports of LA/Long Beach, "
+                   "major rail intermodal yards, the largest industrial submarket in the US."},
+    "New Jersey": {"city": "Exit 8A Corridor (Cranbury/Monroe Twp), NJ", "rationale": "Central NJ Turnpike "
+                   "corridor — the primary distribution hub for the NY/NJ metro and Port of NY/NJ."},
+    "Pennsylvania": {"city": "Lehigh Valley, PA", "rationale": "I-78/I-81 junction, major East Coast distribution "
+                     "hub within a day's drive of NYC, Philadelphia, and Baltimore."},
+    "Tennessee": {"city": "Memphis, TN", "rationale": "FedEx global air hub, I-40/I-55 junction, Mississippi "
+                  "River barge access."},
+    "Indiana": {"city": "Indianapolis, IN", "rationale": "Crossroads of America — more interstate highways "
+                "converge here than any other US city; FedEx's 2nd-largest air hub."},
+    "Arizona": {"city": "Phoenix, AZ", "rationale": "I-10/I-17 junction, growing distribution hub for Southwest "
+                "US/Mexico cross-border trade."},
+    "Nevada": {"city": "Reno, NV", "rationale": "I-80 corridor, no state income tax, major West Coast "
+               "distribution alternative to CA with lower costs."},
+    "Washington": {"city": "Seattle-Tacoma, WA", "rationale": "Port of Seattle/Tacoma, primary Pacific Northwest "
+                   "gateway for Asia-Pacific trade."},
+    "Kentucky": {"city": "Louisville, KY", "rationale": "UPS Worldport global air hub, I-64/I-65/I-71 junction."},
+    "Missouri": {"city": "Kansas City, MO", "rationale": "Largest rail freight hub in the US by tonnage, "
+                 "central US location for national distribution."},
+    "Virginia": {"city": "Ashburn / Loudoun County, VA", "rationale": "Dulles Intl Airport, dense fiber/data "
+                 "infrastructure, I-95/Rte 28 access."},
+    "North Carolina": {"city": "Charlotte, NC", "rationale": "I-77/I-85 junction, growing Southeast distribution "
+                       "hub with strong intermodal rail."},
+}
+
+
 def suggest_best_next_location(dc_name: str, scores_row: pd.Series, weights: dict,
                                 cand_df: pd.DataFrame, selected_df: pd.DataFrame,
-                                service_radius_km: float) -> str:
+                                service_radius_km: float, state: str | None = None) -> str:
     """For a site scoring below the quality bar, produce a concrete,
     data-grounded suggestion rather than a generic "consider alternatives":
-    names the weakest-scoring criterion, and — using the run's OWN computed
-    lease-cost proxy (real model output, not invented) — flags whether a
-    cheaper unselected candidate exists nearby, as a lease-cost angle worth
-    checking."""
+    names the weakest-scoring criterion, recommends a REAL named logistics-hub
+    city in the same state where one is known (rather than an arbitrary
+    reverse-geocoded place that happened to be near the demand centroid),
+    and — using the run's OWN computed lease-cost proxy — flags whether a
+    cheaper unselected candidate exists nearby."""
     criterion_labels = {c["key"]: c["label"] for c in DEFAULT_SCORING_CRITERIA}
     crit_scores = {k: scores_row.get(k, 5) for k in weights if k in criterion_labels}
     if not crit_scores:
@@ -393,6 +445,10 @@ def suggest_best_next_location(dc_name: str, scores_row: pd.Series, weights: dic
     weakest_val = crit_scores[weakest_key]
 
     suggestion = (f"**{dc_name}** scores lowest on **{weakest_label}** ({weakest_val}/10). ")
+
+    hub = STATE_LOGISTICS_HUBS.get(state) if state else None
+    if hub and hub["city"].split(",")[0].split(" / ")[0].strip().lower() not in dc_name.lower():
+        suggestion += f"Consider **{hub['city']}** instead — {hub['rationale']} "
 
     if weakest_key == "warehouse_rental_cost" and cand_df is not None and len(cand_df) > 0 \
             and selected_df is not None and "lat" in selected_df.columns:
@@ -407,17 +463,160 @@ def suggest_best_next_location(dc_name: str, scores_row: pd.Series, weights: dic
             if this_cost is not None and len(nearby) > 0 and nearby["monthly_lease_cost"].min() < this_cost:
                 cheaper = nearby.loc[nearby["monthly_lease_cost"].idxmin()]
                 savings_pct = (1 - cheaper["monthly_lease_cost"] / this_cost) * 100
-                suggestion += (f"A nearby unselected candidate site ({cheaper['site_id']}, "
-                               f"~{cheaper['dist_from_center_km']:.0f} km from cluster center) has an estimated "
-                               f"lease cost ~{savings_pct:.0f}% lower — worth evaluating as an alternative.")
-            else:
+                suggestion += (f"Within the current candidate pool, site {cheaper['site_id']} "
+                               f"(~{cheaper['dist_from_center_km']:.0f} km from cluster center) has an estimated "
+                               f"lease cost ~{savings_pct:.0f}% lower — worth evaluating as a nearer-term alternative.")
+            elif not hub:
                 suggestion += "No nearby unselected candidate offers a meaningfully lower estimated lease cost in this run."
-        else:
+        elif not hub:
             suggestion += "Consider evaluating nearby alternate sites for better rental terms."
     else:
-        suggestion += "Consider evaluating alternate nearby candidates or offsetting with a higher score elsewhere before committing."
+        if not hub:
+            suggestion += "Consider evaluating alternate nearby candidates or offsetting with a higher score elsewhere before committing."
 
     return suggestion
+
+
+# ---------------------------------------------------------------------------
+# GenAI copilot — basefile transformation + scenario comparison assistant
+#
+# Both features require the user's OWN Anthropic API key (entered in the
+# sidebar, kept in session only, never written to disk). This app has no
+# bundled key — that would mean shipping Anthropic credentials inside code
+# handed to users, which is never appropriate. Without a key, these features
+# show a clear message rather than silently failing.
+# ---------------------------------------------------------------------------
+
+def call_claude_api(api_key: str, system_prompt: str, user_message: str,
+                     max_tokens: int = 1500, model: str = "claude-sonnet-4-5-20250929") -> tuple[str | None, str | None]:
+    """Call the Anthropic Messages API directly over HTTPS (no SDK dependency).
+    Returns (response_text, error_message) — exactly one will be None."""
+    import requests
+    if not api_key or not api_key.strip():
+        return None, "No API key provided."
+    try:
+        resp = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": api_key.strip(),
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": model,
+                "max_tokens": max_tokens,
+                "system": system_prompt,
+                "messages": [{"role": "user", "content": user_message}],
+            },
+            timeout=30,
+        )
+        if resp.status_code == 401:
+            return None, "API key was rejected (401) — check it's correct and active."
+        if resp.status_code != 200:
+            return None, f"API error (HTTP {resp.status_code}): {resp.text[:300]}"
+        data = resp.json()
+        text_blocks = [b["text"] for b in data.get("content", []) if b.get("type") == "text"]
+        return "\n".join(text_blocks), None
+    except requests.exceptions.Timeout:
+        return None, "Request timed out — try again."
+    except Exception as e:
+        return None, f"Request failed: {e}"
+
+
+TARGET_SCHEMAS = {
+    "Customer Demand": ["city", "country", "company_code", "product_id", "demand_value", "lat", "lon"],
+    "Products": ["product_id", "product_name"],
+    "Existing Facilities": ["facility_id", "facility_name", "city", "country", "lat", "lon"],
+}
+
+
+def build_mapping_prompt(target_table: str, raw_columns: list, sample_rows: str,
+                          user_instruction: str) -> tuple[str, str]:
+    """Build the system + user prompt asking Claude to propose a column
+    mapping from a raw basefile (shipments/transactions/forecast) onto one
+    of this app's required table schemas. Returns (system_prompt, user_msg)."""
+    target_cols = TARGET_SCHEMAS.get(target_table, [])
+    system_prompt = (
+        "You are a data-mapping assistant for a supply-chain network-design tool. "
+        "Given a raw file's column names, a few sample rows, and the user's instructions, "
+        "propose a mapping from the raw columns onto a required target schema. "
+        "Respond with ONLY a JSON object, no other text, no markdown fences, in this exact shape:\n"
+        '{"mapping": {"<target_column>": "<raw_column_or_expression>", ...}, '
+        '"notes": "<one or two sentences on any assumptions made>", '
+        '"unmapped_target_columns": ["<target col with no good source>", ...]}\n'
+        "For a target column, the value can be a raw column name to copy directly, or a simple "
+        "pandas-eval-safe expression using raw column names (e.g. \"weight_kg * 2.20462\" to convert "
+        "to pounds). If a target column has no reasonable source, list it in unmapped_target_columns "
+        "and omit it from mapping."
+    )
+    user_msg = (
+        f"Target table: {target_table}\n"
+        f"Required target columns: {target_cols}\n"
+        f"Raw file columns: {raw_columns}\n"
+        f"Sample rows (as text):\n{sample_rows}\n"
+        f"User's instructions: {user_instruction or '(none given — infer the best mapping from column names)'}"
+    )
+    return system_prompt, user_msg
+
+
+def parse_mapping_response(response_text: str) -> tuple[dict | None, str | None]:
+    """Parse the JSON mapping Claude returns. Returns (mapping_dict, error)."""
+    import json
+    import re
+    if not response_text:
+        return None, "Empty response from the model."
+    cleaned = response_text.strip()
+    cleaned = re.sub(r"^```json\s*|\s*```$", "", cleaned, flags=re.MULTILINE).strip()
+    try:
+        parsed = json.loads(cleaned)
+        if "mapping" not in parsed:
+            return None, "Response was valid JSON but missing the 'mapping' key."
+        return parsed, None
+    except json.JSONDecodeError as e:
+        return None, f"Could not parse the model's response as JSON: {e}"
+
+
+def apply_column_mapping(raw_df: pd.DataFrame, mapping: dict) -> tuple[pd.DataFrame | None, str | None]:
+    """Apply a {target_col: raw_col_or_expression} mapping to produce the
+    transformed target table. Expressions are evaluated with pandas.eval
+    against the raw dataframe's columns only (no arbitrary code execution)."""
+    result = pd.DataFrame(index=raw_df.index)
+    for target_col, source in mapping.items():
+        try:
+            if source in raw_df.columns:
+                result[target_col] = raw_df[source]
+            else:
+                result[target_col] = raw_df.eval(source)
+        except Exception as e:
+            return None, f"Could not compute column '{target_col}' from '{source}': {e}"
+    return result, None
+
+
+COMPARISON_INTENTS = ["coverage_comparison", "distance_comparison", "sites_comparison", "summary_table"]
+
+
+def classify_comparison_intent(api_key: str, scenario_names: list, user_question: str) -> tuple[str | None, str | None]:
+    """Use Claude to classify a free-text comparison question into one of a
+    small, SAFE set of supported chart/table types, which the app then
+    renders itself with its own plotting code — never executing arbitrary
+    model-generated code."""
+    system_prompt = (
+        "You classify a user's question about comparing supply-chain network scenarios into exactly one "
+        f"of these categories: {COMPARISON_INTENTS}. "
+        "coverage_comparison = they want to compare demand coverage % across scenarios. "
+        "distance_comparison = they want to compare weighted average service distance across scenarios. "
+        "sites_comparison = they want to compare number of sites opened / cost across scenarios. "
+        "summary_table = anything else, or a general overview request. "
+        "Respond with ONLY the category name, nothing else."
+    )
+    user_msg = f"Saved scenarios: {scenario_names}\nQuestion: {user_question}"
+    response, error = call_claude_api(api_key, system_prompt, user_msg, max_tokens=20)
+    if error:
+        return None, error
+    intent = response.strip().lower()
+    if intent not in COMPARISON_INTENTS:
+        intent = "summary_table"
+    return intent, None
 
 
 def compute_weighted_scores(scores_df: pd.DataFrame, weights: dict) -> pd.DataFrame:
