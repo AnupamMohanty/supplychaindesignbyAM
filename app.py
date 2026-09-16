@@ -334,19 +334,24 @@ for k, v in defaults.items():
 if st.session_state.view == "landing":
     st.markdown("""<div class="mks-hero">
         <h1>MKS Supply Chain Solutions</h1>
-        <p class="headline">End-to-end supply chain decision tools — from network design to digital twins —
-        built to turn real operating data into concrete, defensible decisions.</p>
+        <p class="headline">Quick supply chain decisions add gas to the economic engine.</p>
     </div>""", unsafe_allow_html=True)
 
-    st.markdown("""<div class="bio-card">
-        <div class="bio-avatar">AM</div>
-        <div>
-            <p class="bio-name">Anupam Mohanty</p>
-            <p class="bio-creds">15+ years of Supply Chain experience · IIM &amp; Purdue alumnus</p>
-            <p class="bio-tag">Building practical, data-driven supply chain decision tools — starting with
-            network design, expanding toward flow, inventory, and digital twin capabilities.</p>
-        </div>
-    </div>""", unsafe_allow_html=True)
+    bio_col1, bio_col2 = st.columns([5, 1])
+    with bio_col1:
+        st.markdown("""<div class="bio-card">
+            <div class="bio-avatar">AM</div>
+            <div>
+                <p class="bio-name">Anupam Mohanty</p>
+                <p class="bio-creds">Senior Manager, Global Supply Chain Network Strategy &amp; Analytics</p>
+                <p class="bio-creds">12+ years global experience · MBA, IIM Udaipur · MS Global Supply Chain, Purdue University</p>
+                <p class="bio-tag">Specializing in network design, scenario modelling, and AI-enabled supply
+                chain analytics.</p>
+            </div>
+        </div>""", unsafe_allow_html=True)
+    with bio_col2:
+        st.markdown("<br><br>", unsafe_allow_html=True)
+        st.link_button("🔗 LinkedIn", "https://www.linkedin.com/in/anupam-mohanty-313205112", width="stretch")
 
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown('<div class="section-title">🧭 Our Solutions</div>', unsafe_allow_html=True)
@@ -605,6 +610,18 @@ if st.session_state.view != "landing":
 # =========================================================================
 if st.session_state.view == "input":
     _step_indicator("data")
+
+    with st.popover("⚙️ Model Configuration", width="stretch"):
+        st.markdown(f"**Unit of measure:** {active_uom}")
+        if mode_key == "num_sites":
+            st.markdown(f"**Optimize by:** Number of new sites — **{num_sites}**")
+        else:
+            st.markdown(f"**Optimize by:** Service coverage target — **{target_pct}%**")
+        st.markdown(f"**Desired service time:** {service_time_value} {service_time_unit}")
+        st.markdown(f"**Last-mile travel capacity:** {miles_per_day} miles/day")
+        st.markdown(f"**Effective service radius:** {service_radius_km:,.0f} km ({service_radius_miles:,.0f} miles)")
+        st.markdown(f"**Include existing sites:** {'Yes' if st.session_state.include_existing else 'No'}")
+        st.caption("Change these in the sidebar (☰ top-left if it's collapsed).")
 
     with st.container(border=True):
         st.markdown('<div class="section-title">🤖 Load a Basefile (AI-Assisted)</div>', unsafe_allow_html=True)
@@ -965,16 +982,16 @@ elif st.session_state.view == "compare":
                 sc_uom = snap.get("model_uom", "")
 
                 st.markdown("**Overview**")
-                t1, t2, t3, t4, t5 = st.columns(5)
+                t1, t2, t3, t4 = st.columns(4)
                 t1.metric("Sites opened", s["sites_selected"])
                 t2.metric("Final coverage", f"{s['final_coverage_pct']}%")
                 t3.metric("Unserved demand", f"{s.get('unserved_demand_pct', 0)}%")
                 t4.metric(f"Total demand ({sc_uom})", f"{s['total_demand']:.0f}")
                 wavg = s.get("weighted_avg_distance_km")
                 if wavg is not None:
-                    t5.metric("Weighted avg distance", f"{wavg*0.621371:.0f} mi ({wavg:.0f} km)")
+                    st.markdown(f"⭐ **Weighted avg service distance:** {wavg*0.621371:.0f} mi ({wavg:.0f} km)")
                 else:
-                    t5.metric("Weighted avg distance", "—")
+                    st.caption("Weighted avg service distance: —")
 
                 st.markdown("**Map**")
                 if sc_demand_df is not None and sel_df is not None and sc_radius_km is not None:
@@ -1046,21 +1063,25 @@ elif st.session_state.view == "results":
 
     st.success(f"✅ Model run complete — run time: {st.session_state['run_time']:.2f} secs")
 
-    m1, m2, m3, m4, m5 = st.columns(5)
+    m1, m2, m3, m4 = st.columns(4)
     m1.metric("Sites opened", summary["sites_selected"])
     m2.metric("Final coverage", f"{summary['final_coverage_pct']}%")
     m3.metric("Unserved demand", f"{summary.get('unserved_demand_pct', 0)}%",
               help="Demand beyond every facility's service radius — genuinely out of reach at this radius, "
                    "not silently assigned to a distant DC.")
     m4.metric(f"Total demand ({run_uom})", f"{summary['total_demand']:.0f}")
+
     wavg = summary.get("weighted_avg_distance_km")
     if wavg is not None:
         wavg_miles = wavg * 0.621371
-        m5.metric("⭐ Weighted avg service distance", f"{wavg_miles:.0f} mi ({wavg:.0f} km)",
-                  help="Σ(distance to nearest facility × demand) / Σ(demand), measured only over SERVED demand "
-                       "(within the service radius) — demand-weighted average distance customers are actually served from.")
+        st.markdown(f"""<div class="rec-card" style="display:flex; align-items:center; justify-content:space-between; margin-top:8px;">
+            <span style="font-weight:700; color:#0B3D91; font-size:15px;">⭐ Weighted avg service distance</span>
+            <span style="font-weight:800; color:#0B3D91; font-size:22px;">{wavg_miles:.0f} mi ({wavg:.0f} km)</span>
+        </div>""", unsafe_allow_html=True)
+        st.caption("Σ(distance to nearest facility × demand) / Σ(demand), measured only over SERVED demand "
+                   "(within the service radius).")
     else:
-        m5.metric("Weighted avg service distance", "—")
+        st.info("Weighted avg service distance: — (no facilities to measure against)")
 
     if run_mode_key == "service_target":
         if summary.get("target_met"):
