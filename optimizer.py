@@ -459,31 +459,53 @@ def suggest_best_next_location(dc_name: str, scores_row: pd.Series, weights: dic
                                 cand_df: pd.DataFrame, selected_df: pd.DataFrame,
                                 service_radius_km: float, state: str | None = None) -> str:
     """For a site scoring below the quality bar, produce a concrete,
-    data-grounded suggestion — never a vague "consider alternatives": names
-    the weakest-scoring criterion, and always recommends a real named city
-    (a specialized logistics hub where known, else the state's best-known
-    major metro), plus — for a rental-cost weakness — checks the run's own
-    candidate pool for a genuinely cheaper nearby alternative."""
+    data-grounded suggestion — never a vague "consider alternatives": lists
+    EVERY criterion scoring below 5 (not just the single weakest one), and
+    always recommends a real named city (a specialized logistics hub where
+    known, else the state's best-known major metro), with a holistic
+    explanation of why it's the better fit across all the flagged gaps —
+    plus, for a rental-cost weakness, checks the run's own candidate pool
+    for a genuinely cheaper nearby alternative."""
     criterion_labels = {c["key"]: c["label"] for c in DEFAULT_SCORING_CRITERIA}
     crit_scores = {k: scores_row.get(k, 5) for k in weights if k in criterion_labels}
     if not crit_scores:
         return f"**{dc_name}**: not enough scoring data to generate a suggestion."
-    weakest_key = min(crit_scores, key=crit_scores.get)
-    weakest_label = criterion_labels.get(weakest_key, weakest_key)
-    weakest_val = crit_scores[weakest_key]
 
-    suggestion = (f"**{dc_name}** scores lowest on **{weakest_label}** ({weakest_val}/10). ")
+    # Every criterion scoring below 5 — not just the single weakest — sorted worst-first
+    weak_criteria = sorted(
+        [(criterion_labels.get(k, k), v) for k, v in crit_scores.items() if v < 5],
+        key=lambda x: x[1]
+    )
+    if not weak_criteria:
+        # Nothing below 5 individually, but the weighted average still fell below 7 —
+        # fall back to naming just the single lowest-scoring criterion.
+        weakest_key = min(crit_scores, key=crit_scores.get)
+        weak_criteria = [(criterion_labels.get(weakest_key, weakest_key), crit_scores[weakest_key])]
+
+    weak_list_str = ", ".join(f"**{label}** ({val}/10)" for label, val in weak_criteria)
+    if len(weak_criteria) == 1:
+        suggestion = f"**{dc_name}** scores low on {weak_list_str}. "
+    else:
+        suggestion = f"**{dc_name}** falls short on {len(weak_criteria)} criteria: {weak_list_str}. "
 
     hub = STATE_LOGISTICS_HUBS.get(state) if state else None
+    weak_labels_lower = [label.lower() for label, _ in weak_criteria]
+    rec_city, rec_rationale = None, None
     if hub and hub["city"].split(",")[0].split(" / ")[0].strip().lower() not in dc_name.lower():
-        suggestion += f"Consider **{hub['city']}** instead — {hub['rationale']} "
+        rec_city, rec_rationale = hub["city"], hub["rationale"]
     elif state and state in FALLBACK_STATE_MAJOR_CITY and \
             FALLBACK_STATE_MAJOR_CITY[state].split(",")[0].split(" / ")[0].strip().lower() not in dc_name.lower():
-        suggestion += (f"Consider **{FALLBACK_STATE_MAJOR_CITY[state]}** instead — the state's largest metro, "
-                       f"generally offering more developed transport and logistics infrastructure than a smaller "
-                       f"nearby location. ")
+        rec_city = FALLBACK_STATE_MAJOR_CITY[state]
+        rec_rationale = "the state's largest metro, generally offering more developed transport and logistics infrastructure"
 
-    if weakest_key == "warehouse_rental_cost" and cand_df is not None and len(cand_df) > 0 \
+    if rec_city:
+        rationale_clean = rec_rationale.rstrip(".")
+        suggestion += (f"Considering all {len(crit_scores)} scoring criteria together — not just one weak spot — "
+                       f"**{rec_city}** is the recommended alternative: {rationale_clean}. This addresses the "
+                       f"{', '.join(l for l, _ in weak_criteria)} gap{'s' if len(weak_criteria) > 1 else ''} "
+                       f"flagged above better than {dc_name}. ")
+
+    if "warehouse rental cost" in weak_labels_lower and cand_df is not None and len(cand_df) > 0 \
             and selected_df is not None and "lat" in selected_df.columns:
         this_site = selected_df[selected_df["dc_name"] == dc_name]
         if len(this_site) > 0:
