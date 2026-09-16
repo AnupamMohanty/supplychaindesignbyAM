@@ -120,6 +120,125 @@ def _step_indicator(current: str):
     )
     st.markdown(pills, unsafe_allow_html=True)
 
+
+def build_network_map(run_demand_df, run_existing_df, selected_df, run_service_radius_km, run_uom, show_lines=True):
+    """Build the folium network map — demand bubbles, existing facilities,
+    new-site triangles, and optional customer-to-DC assignment lines.
+    Shared by both the Results view and the Compare Scenarios view so both
+    show the exact same map rendering, not two divergent copies."""
+    center_lat, center_lon = run_demand_df["lat"].mean(), run_demand_df["lon"].mean()
+    m = folium.Map(location=[center_lat, center_lon], zoom_start=6, tiles="OpenStreetMap")
+
+    max_demand = run_demand_df["demand_value"].max()
+    max_demand = max_demand if max_demand and max_demand > 0 else 1
+
+    facility_coords = {}
+    if run_existing_df is not None:
+        for _, r in run_existing_df.iterrows():
+            facility_coords[r.get("facility_name")] = (r["lat"], r["lon"])
+    for _, r in selected_df.iterrows():
+        facility_coords[r.get("facility_name")] = (r["lat"], r["lon"])
+
+    if show_lines and "assigned_facility_name" in run_demand_df.columns:
+        line_layer = folium.FeatureGroup(name="Customer → DC assignment")
+        for _, row in run_demand_df.iterrows():
+            fac_name = row.get("assigned_facility_name")
+            if fac_name in facility_coords:
+                folium.PolyLine(
+                    [(row["lat"], row["lon"]), facility_coords[fac_name]],
+                    color="#8592AD", weight=1, opacity=0.6, dash_array="4,6",
+                ).add_to(line_layer)
+        line_layer.add_to(m)
+
+    demand_layer = folium.FeatureGroup(name="Demand (bubble size = volume)")
+    for _, row in run_demand_df.iterrows():
+        bubble_radius = 4 + (row["demand_value"] / max_demand) * 20
+        served_by = row.get("assigned_facility_name", "")
+        folium.CircleMarker(
+            [row["lat"], row["lon"]], radius=bubble_radius, color="#D32F2F",
+            fill=True, fill_color="#E53935", fill_opacity=0.45, weight=1,
+            popup=f"{row.get('city', '')}: {row['demand_value']:.0f} {run_uom}<br>Served by: {served_by}",
+        ).add_to(demand_layer)
+    demand_layer.add_to(m)
+
+    if run_existing_df is not None and len(run_existing_df) > 0:
+        existing_layer = folium.FeatureGroup(name="Existing facilities")
+        for _, row in run_existing_df.iterrows():
+            folium.Marker(
+                [row["lat"], row["lon"]],
+                icon=folium.Icon(color="blue", icon="industry", prefix="fa"),
+                popup=str(row.get("facility_name", "Existing facility")),
+            ).add_to(existing_layer)
+            folium.Circle(
+                [row["lat"], row["lon"]], radius=run_service_radius_km * 1000,
+                color="#0B3D91", fill=False, weight=1, dash_array="5",
+            ).add_to(existing_layer)
+        existing_layer.add_to(m)
+
+    new_layer = folium.FeatureGroup(name="New sites (recommended)")
+    triangle_svg = (
+        '<svg width="28" height="26" viewBox="0 0 28 26" xmlns="http://www.w3.org/2000/svg">'
+        '<polygon points="14,1 27,25 1,25" fill="#0B6B2C" stroke="#053D18" stroke-width="1.5"/>'
+        '</svg>'
+    )
+    for i, row in selected_df.iterrows():
+        folium.Marker(
+            [row["lat"], row["lon"]],
+            icon=folium.DivIcon(html=triangle_svg, icon_size=(28, 26), icon_anchor=(14, 20)),
+            popup=(f"<b>{row.get('dc_name', row['site_id'])}</b> (opened #{i+1})<br>"
+                   f"Incremental demand covered: {row['incremental_demand_covered']:.0f} {run_uom}<br>"
+                   f"Cumulative coverage: {row['cumulative_coverage_pct']}%<br>"
+                   f"Lease: {row['monthly_lease_cost']:,.0f}/mo"),
+        ).add_to(new_layer)
+        folium.Circle(
+            [row["lat"], row["lon"]], radius=run_service_radius_km * 1000,
+            color="#F5C518", fill=False, weight=2,
+        ).add_to(new_layer)
+    new_layer.add_to(m)
+
+    folium.LayerControl(collapsed=False).add_to(m)
+    return m
+
+
+def build_scenario_recommendation(selected_df, weights=None) -> list:
+    """Build the same recommendation-text synthesis used in Results view,
+    from just a scenario's selected_df — usable standalone in Compare view
+    without needing the interactive causal-scoring state to have been saved.
+    Uses default scoring weights, since Compare shows every scenario on the
+    same footing rather than whatever weights happened to be set live."""
+    if weights is None:
+        weights = {c["key"]: c["default_weight"] for c in DEFAULT_SCORING_CRITERIA}
+    if selected_df is None or len(selected_df) == 0 or "dc_name" not in selected_df.columns:
+        return ["No new sites were opened in this scenario — nothing to score on causal factors."]
+
+    rows = []
+    for _, site in selected_df.iterrows():
+        dc_name = site["dc_name"]
+        match = lookup_reference_scores(dc_name)
+        row = {"dc_name": dc_name}
+        if match:
+            scores, _ = match
+            row.update(scores)
+        else:
+            row.update({c["key"]: 5 for c in DEFAULT_SCORING_CRITERIA})
+        rows.append(row)
+    scores_df = pd.DataFrame(rows)
+    scored = compute_weighted_scores(scores_df, weights)
+
+    top_site = scored.iloc[0]
+    avg_score = scored["weighted_score"].mean()
+    low_scorers = scored[scored["weighted_score"] < 7]
+
+    lines = [f"Top-ranked site on causal factors: **{top_site['dc_name']}** "
+             f"(weighted score **{top_site['weighted_score']:.1f}/10**)."]
+    lines.append(f"Average causal score across opened sites: **{avg_score:.1f}/10**.")
+    if len(low_scorers) > 0:
+        lines.append(f"⚠️ {len(low_scorers)} site(s) scored below 7.0 on causal factors — see the Causal Analysis "
+                      f"section in Results & Analysis for specific improvement suggestions.")
+    else:
+        lines.append("All opened sites scored at or above the 7.0 quality bar.")
+    return lines
+
 # ---------- Empty-table schemas (no forced sample data) ----------
 EMPTY_PRODUCTS = pd.DataFrame(columns=["product_id", "product_name"])
 EMPTY_DEMAND = pd.DataFrame(columns=["city", "country", "company_code", "product_id", "demand_value", "lat", "lon"])
@@ -672,6 +791,45 @@ elif st.session_state.view == "compare":
         st.download_button("⬇ Download comparison (CSV)", csv_buffer.getvalue(),
                             file_name="scenario_comparison.csv", mime="text/csv")
 
+        st.divider()
+        st.markdown('<div class="section-title">🔍 Each scenario, side by side</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-sub">Same output as Results & Analysis for each saved scenario — '
+                     'overview, map, and recommendations.</div>', unsafe_allow_html=True)
+
+        scenario_tabs = st.tabs(list(runnable.keys()))
+        for tab, (name, snap) in zip(scenario_tabs, runnable.items()):
+            with tab:
+                s = snap["summary"]
+                sel_df = snap.get("selected_df")
+                sc_demand_df = snap.get("run_demand_df")
+                sc_existing_df = snap.get("existing_df")
+                sc_radius_km = snap.get("service_radius_km")
+                sc_uom = snap.get("model_uom", "")
+
+                st.markdown("**Overview**")
+                t1, t2, t3, t4, t5 = st.columns(5)
+                t1.metric("Sites opened", s["sites_selected"])
+                t2.metric("Baseline coverage", f"{s['baseline_coverage_pct']}%")
+                t3.metric("Final coverage", f"{s['final_coverage_pct']}%")
+                t4.metric(f"Total demand ({sc_uom})", f"{s['total_demand']:.0f}")
+                wavg = s.get("weighted_avg_distance_km")
+                if wavg is not None:
+                    t5.metric("Weighted avg distance", f"{wavg*0.621371:.0f} mi ({wavg:.0f} km)")
+                else:
+                    t5.metric("Weighted avg distance", "—")
+
+                st.markdown("**Map**")
+                if sc_demand_df is not None and sel_df is not None and sc_radius_km is not None:
+                    sc_map = build_network_map(sc_demand_df, sc_existing_df, sel_df, sc_radius_km, sc_uom,
+                                                show_lines=len(sc_demand_df) <= 300)
+                    st_folium(sc_map, width=None, height=420, returned_objects=[], key=f"map_{name}")
+                else:
+                    st.caption("Map data not available for this scenario.")
+
+                st.markdown("**Recommendations**")
+                for line in build_scenario_recommendation(sel_df):
+                    st.markdown(f"- {line}")
+
     st.divider()
     st.markdown('<div class="section-title">💬 Ask the AI assistant (optional)</div>', unsafe_allow_html=True)
     st.markdown('<div class="section-sub">For natural-language questions about your scenarios. The comparisons '
@@ -765,78 +923,7 @@ else:
         show_lines = st.checkbox("Show customer → DC assignment lines", value=len(run_demand_df) <= 300,
                                   help="Auto-disabled by default for very large demand tables to keep the map responsive.")
 
-        center_lat, center_lon = run_demand_df["lat"].mean(), run_demand_df["lon"].mean()
-        m = folium.Map(location=[center_lat, center_lon], zoom_start=6, tiles="OpenStreetMap")
-
-        max_demand = run_demand_df["demand_value"].max()
-        max_demand = max_demand if max_demand and max_demand > 0 else 1
-
-        # Facility name -> coords lookup, for drawing lines
-        facility_coords = {}
-        if run_existing_df is not None:
-            for _, r in run_existing_df.iterrows():
-                facility_coords[r.get("facility_name")] = (r["lat"], r["lon"])
-        for _, r in selected_df.iterrows():
-            facility_coords[r.get("facility_name")] = (r["lat"], r["lon"])
-
-        if show_lines and "assigned_facility_name" in run_demand_df.columns:
-            line_layer = folium.FeatureGroup(name="Customer → DC assignment")
-            for _, row in run_demand_df.iterrows():
-                fac_name = row.get("assigned_facility_name")
-                if fac_name in facility_coords:
-                    folium.PolyLine(
-                        [(row["lat"], row["lon"]), facility_coords[fac_name]],
-                        color="#8592AD", weight=1, opacity=0.6, dash_array="4,6",
-                    ).add_to(line_layer)
-            line_layer.add_to(m)
-
-        demand_layer = folium.FeatureGroup(name="Demand (bubble size = volume)")
-        for _, row in run_demand_df.iterrows():
-            bubble_radius = 4 + (row["demand_value"] / max_demand) * 20
-            served_by = row.get("assigned_facility_name", "")
-            folium.CircleMarker(
-                [row["lat"], row["lon"]], radius=bubble_radius, color="#D32F2F",
-                fill=True, fill_color="#E53935", fill_opacity=0.45, weight=1,
-                popup=f"{row.get('city', '')}: {row['demand_value']:.0f} {run_uom}<br>Served by: {served_by}",
-            ).add_to(demand_layer)
-        demand_layer.add_to(m)
-
-        if run_existing_df is not None and len(run_existing_df) > 0:
-            existing_layer = folium.FeatureGroup(name="Existing facilities")
-            for _, row in run_existing_df.iterrows():
-                folium.Marker(
-                    [row["lat"], row["lon"]],
-                    icon=folium.Icon(color="blue", icon="industry", prefix="fa"),
-                    popup=str(row.get("facility_name", "Existing facility")),
-                ).add_to(existing_layer)
-                folium.Circle(
-                    [row["lat"], row["lon"]], radius=run_service_radius_km * 1000,
-                    color="#0B3D91", fill=False, weight=1, dash_array="5",
-                ).add_to(existing_layer)
-            existing_layer.add_to(m)
-
-        new_layer = folium.FeatureGroup(name="New sites (recommended)")
-        triangle_svg = (
-            '<svg width="28" height="26" viewBox="0 0 28 26" xmlns="http://www.w3.org/2000/svg">'
-            '<polygon points="14,1 27,25 1,25" fill="#0B6B2C" stroke="#053D18" stroke-width="1.5"/>'
-            '</svg>'
-        )
-        for i, row in selected_df.iterrows():
-            folium.Marker(
-                [row["lat"], row["lon"]],
-                icon=folium.DivIcon(html=triangle_svg, icon_size=(28, 26), icon_anchor=(14, 20)),
-                popup=(f"<b>{row.get('dc_name', row['site_id'])}</b> (opened #{i+1})<br>"
-                       f"Incremental demand covered: {row['incremental_demand_covered']:.0f} {run_uom}<br>"
-                       f"Cumulative coverage: {row['cumulative_coverage_pct']}%<br>"
-                       f"Lease: {row['monthly_lease_cost']:,.0f}/mo"),
-            ).add_to(new_layer)
-            folium.Circle(
-                [row["lat"], row["lon"]], radius=run_service_radius_km * 1000,
-                color="#F5C518", fill=False, weight=2,
-            ).add_to(new_layer)
-        new_layer.add_to(m)
-
-        folium.LayerControl(collapsed=False).add_to(m)
+        m = build_network_map(run_demand_df, run_existing_df, selected_df, run_service_radius_km, run_uom, show_lines)
         st_folium(m, width=None, height=560, returned_objects=[])
 
     with col2:
