@@ -100,7 +100,13 @@ div[data-testid="stChatMessage"] { border-radius: 12px; }
     background: linear-gradient(120deg, #0B3D91 0%, #123B7A 55%, #0A2A63 100%);
     color: #FFFFFF; padding: 40px 40px; border-radius: 18px; margin-bottom: 20px;
     box-shadow: 0 10px 30px rgba(11,61,145,0.22);
+    position: relative; overflow: hidden;
 }
+.mks-hero-bg {
+    position: absolute; top: -10%; left: -5%; width: 110%; height: 120%;
+    filter: blur(3px); opacity: 0.35; z-index: 0; pointer-events: none;
+}
+.mks-hero-content { position: relative; z-index: 1; }
 .mks-hero h1 { margin: 0; font-size: 36px; font-weight: 800; letter-spacing: -0.5px; }
 .mks-hero .headline { margin: 10px 0 0 0; color: #E7EEFB; font-size: 18px; font-weight: 500; max-width: 720px; }
 .bio-card {
@@ -174,12 +180,17 @@ footer {visibility: hidden;}
 </style>""", unsafe_allow_html=True)
 
 def _step_indicator(current: str):
-    steps = [("data", "① Data & Settings"), ("compare", "📊 Compare Scenarios"), ("results", "② Results & Analysis")]
-    pills = "".join(
-        f'<span class="step-pill{" active" if key == current else ""}">{label}</span>'
-        for key, label in steps
-    )
-    st.markdown(pills, unsafe_allow_html=True)
+    steps = [("input", "① Data & Settings"), ("compare", "📊 Compare Scenarios"), ("results", "② Results & Analysis")]
+    cols = st.columns(len(steps))
+    for col, (target_view, label) in zip(cols, steps):
+        with col:
+            if st.button(label, key=f"step_nav_{target_view}_{current}",
+                         type="primary" if target_view == current else "secondary", width="stretch"):
+                if target_view == "results" and "opt_summary" not in st.session_state:
+                    st.toast("⚠️ Run the optimizer first to see Results & Analysis.")
+                else:
+                    st.session_state["view"] = target_view
+                    st.rerun()
 
 
 def build_network_map(run_demand_df, run_existing_df, selected_df, run_service_radius_km, run_uom, show_lines=True):
@@ -342,9 +353,32 @@ for k, v in defaults.items():
         st.session_state[k] = v
 
 if st.session_state.view == "landing":
-    st.markdown("""<div class="mks-hero">
-        <h1>MKS Supply Chain Solutions</h1>
-        <p class="headline">Quick supply chain decisions add gas to the economic engine.</p>
+    mks_hero_bg_svg = ('<svg viewBox="0 0 1000 500" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid slice">'
+        '<g stroke="#F5C518" stroke-width="1.5" fill="none" opacity="0.8">'
+        '<path d="M172,156 Q233,90 294,139"/>'
+        '<path d="M294,139 Q400,60 500,108"/>'
+        '<path d="M500,108 Q580,120 653,181"/>'
+        '<path d="M653,181 Q680,160 703,197"/>'
+        '<path d="M703,197 Q750,190 789,247"/>'
+        '<path d="M789,247 Q815,190 836,164"/>'
+        '<path d="M836,164 Q500,20 172,156"/>'
+        '<path d="M500,108 Q505,170 508,233"/>'
+        '<path d="M508,233 Q525,290 550,344"/>'
+        '<path d="M372,313 Q440,270 508,233"/>'
+        '<path d="M294,139 Q330,230 372,313"/>'
+        '</g>'
+        '<g fill="#FFFFFF">'
+        '<circle cx="172" cy="156" r="5"/><circle cx="294" cy="139" r="5"/><circle cx="500" cy="108" r="5"/>'
+        '<circle cx="653" cy="181" r="5"/><circle cx="703" cy="197" r="5"/><circle cx="789" cy="247" r="5"/>'
+        '<circle cx="836" cy="164" r="5"/><circle cx="919" cy="344" r="5"/><circle cx="372" cy="313" r="5"/>'
+        '<circle cx="508" cy="233" r="5"/><circle cx="550" cy="344" r="5"/>'
+        '</g></svg>')
+    st.markdown(f"""<div class="mks-hero">
+        <div class="mks-hero-bg">{mks_hero_bg_svg}</div>
+        <div class="mks-hero-content">
+            <h1>MKS Supply Chain Solutions</h1>
+            <p class="headline">Quick supply chain decisions add gas to the economic engine.</p>
+        </div>
     </div>""", unsafe_allow_html=True)
 
     bio_col1, bio_col2 = st.columns([5, 1])
@@ -511,7 +545,7 @@ if st.session_state.view != "landing":
         st.divider()
 
 if st.session_state.view == "input":
-    _step_indicator("data")
+    _step_indicator("input")
 
     with st.container(border=True):
         st.markdown("""<div style="background:#0B3D91; border-radius:12px; padding:12px 16px; margin-bottom:4px;">
