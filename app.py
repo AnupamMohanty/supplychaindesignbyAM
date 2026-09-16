@@ -595,6 +595,24 @@ if st.session_state.view == "input":
             st.session_state.demand_df = pd.read_csv(demand_upload)
             st.session_state["_demand_upload_id"] = demand_upload.file_id
 
+        demand_needs_geo_now = needs_geocoding(st.session_state.demand_df)
+        geo_btn_col, geo_msg_col = st.columns([1, 3])
+        with geo_btn_col:
+            if st.button("🌍 Geocode missing locations", key="geocode_demand_btn",
+                         disabled=not demand_needs_geo_now, width="stretch"):
+                with st.spinner("Looking up coordinates from City + Country..."):
+                    st.session_state.demand_df, failed_d = geocode_locations(st.session_state.demand_df)
+                if len(failed_d) == 0:
+                    st.success("Geocoding complete — all rows resolved.")
+                else:
+                    st.warning(f"Geocoding complete, but {len(failed_d)} row(s) could not be resolved.")
+                st.rerun()
+        with geo_msg_col:
+            if demand_needs_geo_now:
+                st.caption("Some rows are missing lat/lon — fills them in from City + Country.")
+            else:
+                st.caption("All rows already have coordinates.")
+
         product_options = st.session_state.products_df["product_id"].dropna().unique().tolist() \
             if "product_id" in st.session_state.products_df.columns else []
         column_config = {
@@ -641,27 +659,18 @@ if st.session_state.view == "input":
         )
         valid_e, msg_e = validate_existing_df(st.session_state.existing_df)
 
-    # ---------- Geocoding ----------
-    demand_needs_geo = needs_geocoding(st.session_state.demand_df)
+    # ---------- Geocoding (Existing Facilities) ----------
     existing_needs_geo = st.session_state.include_existing and needs_geocoding(st.session_state.existing_df)
 
-    if demand_needs_geo or existing_needs_geo:
-        st.info("📍 Some rows are missing lat/lon coordinates. Geocode automatically from City + Country below.")
-        if st.button("🌍 Geocode missing locations", key="geocode_btn"):
+    if existing_needs_geo:
+        st.info("📍 Existing Facilities has rows missing lat/lon coordinates.")
+        if st.button("🌍 Geocode missing locations (Existing Facilities)", key="geocode_btn"):
             with st.spinner("Looking up coordinates from City + Country..."):
-                if demand_needs_geo:
-                    st.session_state.demand_df, failed_d = geocode_locations(st.session_state.demand_df)
-                else:
-                    failed_d = []
-                if existing_needs_geo:
-                    st.session_state.existing_df, failed_e = geocode_locations(st.session_state.existing_df)
-                else:
-                    failed_e = []
-            n_failed = len(failed_d) + len(failed_e)
-            if n_failed == 0:
+                st.session_state.existing_df, failed_e = geocode_locations(st.session_state.existing_df)
+            if len(failed_e) == 0:
                 st.success("Geocoding complete — all rows resolved.")
             else:
-                st.warning(f"Geocoding complete, but {n_failed} row(s) could not be resolved.")
+                st.warning(f"Geocoding complete, but {len(failed_e)} row(s) could not be resolved.")
             st.rerun()
 
     # ---------- Validation summary before Run ----------
@@ -1029,6 +1038,7 @@ else:
             st.session_state.site_scores_df = pd.DataFrame(rows)
             st.session_state["_scored_dc_names"] = list(selected_df["dc_name"])
             st.session_state["_research_notes"] = research_notes
+            st.session_state.pop("causal_scored", None)  # new sites — force a fresh Run click
 
         if st.session_state.get("_research_notes"):
             with st.expander("📚 Research notes for matched locations"):
@@ -1047,80 +1057,91 @@ else:
             column_config=score_column_config, hide_index=True,
         )
 
-        scored = compute_weighted_scores(st.session_state.site_scores_df, new_weights)
+        run_causal_clicked = st.button("▶ Run Causal Analysis", type="primary", width="stretch")
+        if run_causal_clicked:
+            st.session_state["causal_scored"] = compute_weighted_scores(st.session_state.site_scores_df, new_weights)
+            st.session_state["causal_weights_used"] = dict(new_weights)
 
-        st.markdown("**Ranked site scores**")
-        ranked_column_config = {
-            "dc_name": st.column_config.TextColumn("DC Location", width="medium"),
-            "weighted_score": st.column_config.ProgressColumn(
-                "⭐ Weighted Score", min_value=0, max_value=10, format="%.2f"
-            ),
-            **{c["key"]: st.column_config.NumberColumn(c["label"], width="small")
-               for c in DEFAULT_SCORING_CRITERIA},
-        }
-        st.dataframe(
-            scored[["dc_name", "weighted_score"] + [c["key"] for c in DEFAULT_SCORING_CRITERIA]],
-            hide_index=True, width="stretch", column_config=ranked_column_config,
-        )
-
-        # Best-next-location advisory for any site scoring below the bar
-        low_scorers = scored[scored["weighted_score"] < 7]
-        if len(low_scorers) > 0:
-            st.markdown("**⚠️ Locations below score threshold (7.0) — suggested next steps**")
-            for _, row in low_scorers.iterrows():
-                site_state = None
-                site_match = selected_df[selected_df["dc_name"] == row["dc_name"]]
-                if len(site_match) > 0 and "dc_state" in site_match.columns:
-                    site_state = site_match.iloc[0]["dc_state"]
-                suggestion = suggest_best_next_location(
-                    row["dc_name"], row, new_weights,
-                    st.session_state.get("run_cand_df"), selected_df, run_service_radius_km,
-                    state=site_state,
-                )
-                st.warning(suggestion)
-
-        # =================================================================
-        # RECOMMENDATION — synthesis of optimization + causal analysis
-        # =================================================================
-        st.divider()
-        st.markdown('<div class="section-title">✅ Recommendation</div>', unsafe_allow_html=True)
-
-        top_site = scored.iloc[0] if len(scored) > 0 else None
-        avg_score = scored["weighted_score"].mean() if len(scored) > 0 else 0
-        n_low = len(low_scorers)
-
-        rec_lines = []
-        unserved_pct = summary.get("unserved_demand_pct", 0)
-        rec_lines.append(
-            (f"This run opens **{summary['sites_selected']} new site(s)**, achieving **{summary['final_coverage_pct']}%** "
-             f"coverage of total demand" + (f" ({unserved_pct}% remains unserved, beyond the service radius)" if unserved_pct > 0 else "") +
-             (f", with a demand-weighted average service distance of **{(wavg * 0.621371):.0f} miles ({wavg:.0f} km)** "
-              f"among served customers." if wavg is not None else "."))
-        )
-
-        if top_site is not None:
-            rec_lines.append(f"On causal analysis, **{top_site['dc_name']}** ranks highest "
-                              f"(weighted score **{top_site['weighted_score']:.1f}/10**), making it the strongest "
-                              f"combination of network fit and site-quality factors among the sites opened.")
-
-        rec_lines.append(f"Average causal score across opened sites: **{avg_score:.1f}/10**.")
-
-        if n_low > 0:
-            rec_lines.append(f"⚠️ **{n_low} site(s) scored below 7.0** — see the suggested next steps above before "
-                              f"finalizing. Proceeding with these sites is reasonable if their network-coverage "
-                              f"contribution is high enough to outweigh the causal-factor gap, but it should be a "
-                              f"deliberate trade-off, not a default.")
+        if "causal_scored" not in st.session_state:
+            st.info("Set your weights and per-site scores above, then click 'Run Causal Analysis' to see the "
+                     "ranked results and recommendations below.")
         else:
-            rec_lines.append("All opened sites scored at or above the 7.0 quality bar — no immediate causal-factor "
-                              "concerns flagged.")
+            scored = st.session_state["causal_scored"]
+            weights_used = st.session_state.get("causal_weights_used", new_weights)
 
-        rec_lines.append("**Overall:** combine both lenses — the optimizer picked sites that maximize network "
-                          "coverage per site opened; the causal analysis checks whether those same locations are "
-                          "actually good places to operate. Where they agree (high coverage contribution *and* high "
-                          "causal score), proceed with confidence. Where they diverge, use the suggestions above to "
-                          "decide whether to substitute a nearby alternative.")
+            st.markdown("**Ranked site scores**")
+            ranked_column_config = {
+                "dc_name": st.column_config.TextColumn("DC Location", width="medium"),
+                "weighted_score": st.column_config.ProgressColumn(
+                    "⭐ Weighted Score", min_value=0, max_value=10, format="%.2f"
+                ),
+                **{c["key"]: st.column_config.NumberColumn(c["label"], width="small")
+                   for c in DEFAULT_SCORING_CRITERIA},
+            }
+            st.dataframe(
+                scored[["dc_name", "weighted_score"] + [c["key"] for c in DEFAULT_SCORING_CRITERIA]],
+                hide_index=True, width="stretch", column_config=ranked_column_config,
+            )
 
-        st.markdown(f'<div class="rec-card">{"<br><br>".join(rec_lines)}</div>', unsafe_allow_html=True)
+            # Best-next-location advisory for any site scoring below the bar
+            low_scorers = scored[scored["weighted_score"] < 7]
+            if len(low_scorers) > 0:
+                st.markdown('<div class="section-title">📍 First level recommendations</div>', unsafe_allow_html=True)
+                st.markdown("**⚠️ Locations below score threshold (7.0) — suggested next steps**")
+                for _, row in low_scorers.iterrows():
+                    site_state = None
+                    site_match = selected_df[selected_df["dc_name"] == row["dc_name"]]
+                    if len(site_match) > 0 and "dc_state" in site_match.columns:
+                        site_state = site_match.iloc[0]["dc_state"]
+                    suggestion = suggest_best_next_location(
+                        row["dc_name"], row, weights_used,
+                        st.session_state.get("run_cand_df"), selected_df, run_service_radius_km,
+                        state=site_state,
+                    )
+                    st.warning(suggestion)
+
+            # =================================================================
+            # RECOMMENDATION — synthesis of optimization + causal analysis
+            # =================================================================
+            st.divider()
+            st.markdown('<div class="section-title">✅ Recommendation</div>', unsafe_allow_html=True)
+
+            top_site = scored.iloc[0] if len(scored) > 0 else None
+            avg_score = scored["weighted_score"].mean() if len(scored) > 0 else 0
+            n_low = len(low_scorers)
+
+            rec_lines = []
+            unserved_pct = summary.get("unserved_demand_pct", 0)
+            rec_lines.append(
+                (f"This run opens **{summary['sites_selected']} new site(s)**, achieving **{summary['final_coverage_pct']}%** "
+                 f"coverage of total demand" + (f" ({unserved_pct}% remains unserved, beyond the service radius)" if unserved_pct > 0 else "") +
+                 (f", with a demand-weighted average service distance of **{(wavg * 0.621371):.0f} miles ({wavg:.0f} km)** "
+                  f"among served customers." if wavg is not None else "."))
+            )
+
+            if top_site is not None:
+                rec_lines.append(f"On causal analysis, **{top_site['dc_name']}** ranks highest "
+                                  f"(weighted score **{top_site['weighted_score']:.1f}/10**), making it the strongest "
+                                  f"combination of network fit and site-quality factors among the sites opened.")
+
+            rec_lines.append(f"Average causal score across opened sites: **{avg_score:.1f}/10**.")
+
+            if n_low > 0:
+                rec_lines.append(f"⚠️ **{n_low} site(s) scored below 7.0** — see the suggested next steps above before "
+                                  f"finalizing. Proceeding with these sites is reasonable if their network-coverage "
+                                  f"contribution is high enough to outweigh the causal-factor gap, but it should be a "
+                                  f"deliberate trade-off, not a default.")
+            else:
+                rec_lines.append("All opened sites scored at or above the 7.0 quality bar — no immediate causal-factor "
+                                  "concerns flagged.")
+
+            rec_lines.append("**Overall:** combine both lenses — the optimizer picked sites that maximize network "
+                              "coverage per site opened; the causal analysis checks whether those same locations are "
+                              "actually good places to operate. Where they agree (high coverage contribution *and* high "
+                              "causal score), proceed with confidence. Where they diverge, use the suggestions above to "
+                              "decide whether to substitute a nearby alternative.")
+
+            st.markdown(f'<div class="rec-card">{"<br><br>".join(rec_lines)}</div>', unsafe_allow_html=True)
 
     # =====================================================================
     # SCENARIO ASSISTANT — AI-assisted comparison across saved scenarios
