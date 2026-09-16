@@ -134,7 +134,7 @@ div[data-testid="stChatMessage"] { border-radius: 12px; }
 .solution-card-body { padding: 18px 22px 22px 22px; }
 .solution-card-body.no-image { padding-top: 22px; }
 .solution-image-banner {
-    position: relative; width: 100%; height: 130px; overflow: hidden;
+    position: relative; width: 100%; height: 210px; overflow: hidden;
 }
 .solution-image-banner img {
     width: 100%; height: 100%; object-fit: cover; display: block;
@@ -189,6 +189,48 @@ MKS_ICON_FLOW = ('<svg viewBox="0 0 64 64" width="52" height="52"><rect x="4" y=
 MKS_ICON_INVENTORY = ('<svg viewBox="0 0 64 64" width="52" height="52"><rect x="14" y="36" width="14" height="14" rx="1" fill="#B7C0D6"/>'
                        '<rect x="30" y="36" width="14" height="14" rx="1" fill="#B7C0D6"/>'
                        '<rect x="22" y="20" width="14" height="14" rx="1" fill="#B7C0D6"/></svg>')
+
+MKS_FLOW_DIAGRAM_BANNER = ('<svg viewBox="0 0 800 210" xmlns="http://www.w3.org/2000/svg" '
+    'style="width:100%; height:100%; display:block;">'
+    '<rect width="800" height="210" fill="#0B3D91"/>'
+    # connecting arrows
+    '<g stroke="#F5C518" stroke-width="3" fill="none">'
+    '<path d="M182 87 L216 87" marker-end="url(#arrowhead)"/>'
+    '<path d="M382 87 L416 87" marker-end="url(#arrowhead)"/>'
+    '<path d="M582 87 L616 87" marker-end="url(#arrowhead)"/>'
+    '</g>'
+    '<defs><marker id="arrowhead" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">'
+    '<path d="M0,0 L8,4 L0,8 Z" fill="#F5C518"/></marker></defs>'
+    # Supplier box
+    '<rect x="20" y="55" width="160" height="65" rx="10" fill="#123B7A" stroke="#F5C518" stroke-width="1.5"/>'
+    '<rect x="80" y="72" width="30" height="24" rx="2" fill="#FFFFFF"/><line x1="80" y1="84" x2="110" y2="84" stroke="#123B7A" stroke-width="2"/>'
+    '<line x1="95" y1="72" x2="95" y2="96" stroke="#123B7A" stroke-width="2"/>'
+    '<text x="100" y="145" fill="#FFFFFF" font-size="15" font-weight="700" text-anchor="middle" font-family="sans-serif">SUPPLIER</text>'
+    # Factory box
+    '<rect x="220" y="55" width="160" height="65" rx="10" fill="#123B7A" stroke="#F5C518" stroke-width="1.5"/>'
+    '<rect x="280" y="80" width="40" height="18" fill="#FFFFFF"/>'
+    '<path d="M280 80 L288 68 L296 80 L296 68 L304 80 L304 68 L312 80 L320 80" fill="#FFFFFF"/>'
+    '<rect x="315" y="70" width="6" height="12" fill="#FFFFFF"/>'
+    '<text x="300" y="145" fill="#FFFFFF" font-size="15" font-weight="700" text-anchor="middle" font-family="sans-serif">FACTORY</text>'
+    # Hub box
+    '<rect x="420" y="55" width="160" height="65" rx="10" fill="#123B7A" stroke="#F5C518" stroke-width="1.5"/>'
+    '<circle cx="500" cy="85" r="7" fill="#FFFFFF"/>'
+    '<circle cx="480" cy="72" r="4" fill="#FFFFFF"/><circle cx="520" cy="72" r="4" fill="#FFFFFF"/>'
+    '<circle cx="480" cy="98" r="4" fill="#FFFFFF"/><circle cx="520" cy="98" r="4" fill="#FFFFFF"/>'
+    '<g stroke="#FFFFFF" stroke-width="1.5">'
+    '<line x1="500" y1="85" x2="480" y2="72"/><line x1="500" y1="85" x2="520" y2="72"/>'
+    '<line x1="500" y1="85" x2="480" y2="98"/><line x1="500" y1="85" x2="520" y2="98"/>'
+    '</g>'
+    '<text x="500" y="145" fill="#FFFFFF" font-size="15" font-weight="700" text-anchor="middle" font-family="sans-serif">HUB</text>'
+    # Customer box
+    '<rect x="620" y="55" width="160" height="65" rx="10" fill="#123B7A" stroke="#F5C518" stroke-width="1.5"/>'
+    '<circle cx="700" cy="76" r="9" fill="#FFFFFF"/>'
+    '<path d="M682 100 Q700 78 718 100 Z" fill="#FFFFFF"/>'
+    '<text x="700" y="145" fill="#FFFFFF" font-size="15" font-weight="700" text-anchor="middle" font-family="sans-serif">CUSTOMER</text>'
+    '<text x="400" y="195" fill="#CFE0FF" font-size="13" text-anchor="middle" font-family="sans-serif">'
+    'Current network · Costs · Service constraints · Scenarios</text>'
+    '</svg>')
+
 MKS_ICON_TWIN = ('<svg viewBox="0 0 64 64" width="52" height="52"><circle cx="20" cy="32" r="12" fill="none" stroke="#B7C0D6" stroke-width="2.5"/>'
                   '<circle cx="44" cy="32" r="12" fill="none" stroke="#B7C0D6" stroke-width="2.5"/>'
                   '<line x1="30" y1="32" x2="34" y2="32" stroke="#B7C0D6" stroke-width="2.5" stroke-dasharray="2,2"/></svg>')
@@ -429,7 +471,7 @@ if st.session_state.view == "landing":
     with row1_col1:
         st.markdown(f"""<div class="solution-card available">
             <div class="solution-image-banner">
-                <img src="https://images.unsplash.com/photo-1494412651409-8963ce7935a7?w=800&q=70&auto=format&fit=crop" alt="Supply chain network"/>
+                <img src="https://images.unsplash.com/photo-1524661135-423995f22d0b?w=900&q=75&auto=format&fit=crop" alt="Global supply chain map"/>
                 <div class="img-overlay"></div>
                 <div class="badge-wrap"><span class="status-badge-live">● LIVE NOW</span></div>
             </div>
@@ -447,8 +489,7 @@ if st.session_state.view == "landing":
     with row1_col2:
         st.markdown(f"""<div class="solution-card dev">
             <div class="solution-image-banner">
-                <img src="https://images.unsplash.com/photo-1616432043562-3671ea2e5242?w=800&q=70&auto=format&fit=crop" alt="Product flow"/>
-                <div class="img-overlay"></div>
+                {MKS_FLOW_DIAGRAM_BANNER}
                 <div class="badge-wrap"><span class="status-badge-dev"><span class="mks-spinner"></span>IN DEVELOPMENT</span></div>
             </div>
             <div class="solution-card-body">
@@ -468,7 +509,7 @@ if st.session_state.view == "landing":
     with row2_col1:
         st.markdown(f"""<div class="solution-card dev">
             <div class="solution-image-banner">
-                <img src="https://images.unsplash.com/photo-1592085198739-ffcad7f36b54?w=800&q=70&auto=format&fit=crop" alt="Warehouse inventory"/>
+                <img src="https://images.unsplash.com/photo-1592085198739-ffcad7f36b54?w=900&q=75&auto=format&fit=crop" alt="Warehouse inventory"/>
                 <div class="img-overlay"></div>
                 <div class="badge-wrap"><span class="status-badge-dev"><span class="mks-spinner"></span>IN DEVELOPMENT</span></div>
             </div>
@@ -489,7 +530,7 @@ if st.session_state.view == "landing":
     with row2_col2:
         st.markdown(f"""<div class="solution-card dev">
             <div class="solution-image-banner">
-                <img src="https://images.unsplash.com/photo-1494412519320-aa613dfb7738?w=800&q=70&auto=format&fit=crop" alt="Digital twin network overview"/>
+                <img src="https://images.unsplash.com/photo-1551288049-bebda4e38f71?w=900&q=75&auto=format&fit=crop" alt="KPI dashboard"/>
                 <div class="img-overlay"></div>
                 <div class="badge-wrap"><span class="status-badge-dev"><span class="mks-spinner"></span>IN DEVELOPMENT</span></div>
             </div>
