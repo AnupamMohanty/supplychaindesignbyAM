@@ -98,6 +98,13 @@ div[data-testid="stChatMessage"] { border-radius: 12px; }
 }
 </style>""", unsafe_allow_html=True)
 
+st.markdown("""<style>
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+[data-testid="stToolbar"] {visibility: hidden;}
+[data-testid="stDecoration"] {display: none;}
+</style>""", unsafe_allow_html=True)
+
 st.markdown("""<div class="hero">
     <h1>🚚 Supply Chain Design by AM</h1>
     <p>Greenfield facility location optimizer — demand, network, and site scoring in one flow</p>
