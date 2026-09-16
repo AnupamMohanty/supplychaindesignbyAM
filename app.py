@@ -109,6 +109,7 @@ st.markdown("""<div class="hero">
     <h1>🚚 Supply Chain Design by AM</h1>
     <p>Greenfield facility location optimizer — demand, network, and site scoring in one flow</p>
     <span class="badge">GREENFIELD · MCLP ENGINE</span>
+    <span class="badge" style="background:#FFFFFF; color:#0B3D91; margin-left:6px;">© Anupam Mohanty</span>
 </div>""", unsafe_allow_html=True)
 
 
@@ -127,7 +128,21 @@ def build_network_map(run_demand_df, run_existing_df, selected_df, run_service_r
     Shared by both the Results view and the Compare Scenarios view so both
     show the exact same map rendering, not two divergent copies."""
     center_lat, center_lon = run_demand_df["lat"].mean(), run_demand_df["lon"].mean()
-    m = folium.Map(location=[center_lat, center_lon], zoom_start=6, tiles="OpenStreetMap")
+    m = folium.Map(location=[center_lat, center_lon], tiles="OpenStreetMap")
+
+    # Fit to the full extent of every point on the map (demand + existing +
+    # new sites) instead of a fixed zoom level — a fixed zoom that looks
+    # right for one city zooms in far too tight for data spread across a
+    # whole country, cropping out most of the network.
+    all_lats, all_lons = list(run_demand_df["lat"]), list(run_demand_df["lon"])
+    if run_existing_df is not None and len(run_existing_df) > 0:
+        all_lats += list(run_existing_df["lat"])
+        all_lons += list(run_existing_df["lon"])
+    if selected_df is not None and len(selected_df) > 0:
+        all_lats += list(selected_df["lat"])
+        all_lons += list(selected_df["lon"])
+    if all_lats:
+        m.fit_bounds([[min(all_lats), min(all_lons)], [max(all_lats), max(all_lons)]])
 
     max_demand = run_demand_df["demand_value"].max()
     max_demand = max_demand if max_demand and max_demand > 0 else 1
@@ -1178,5 +1193,8 @@ else:
             st.session_state.pop("_last_comparison_df", None)
             st.rerun()
 
-st.markdown('<div class="app-footer">Supply Chain Design by AM · Greenfield MCLP engine · '
-            'Reference research current as of Sept 2026</div>', unsafe_allow_html=True)
+st.markdown("""<div class="app-footer">
+    © 2026 Anupam Mohanty. All rights reserved.<br>
+    ⚠️ Unauthorized copying, distribution, or use of this tool or its source code without permission is prohibited.<br>
+    Supply Chain Design by AM · Greenfield MCLP engine · Reference research current as of Sept 2026
+</div>""", unsafe_allow_html=True)
