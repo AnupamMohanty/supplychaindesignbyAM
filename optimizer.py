@@ -248,16 +248,21 @@ def reverse_geocode_details(sites_df: pd.DataFrame) -> list:
 
 
 def assign_customers_to_facilities(demand_df: pd.DataFrame, facilities_df: pd.DataFrame,
-                                    epsg: int) -> pd.DataFrame:
+                                    epsg: int, service_radius_km: float | None = None) -> pd.DataFrame:
     """For each demand row, find its NEAREST open facility (existing + new
-    combined) and attach that facility's identity + distance. This answers
-    "which DC is serving which customers" — every demand point is assigned
-    to exactly one facility, its closest one, regardless of service radius.
+    combined) and attach that facility's identity + distance.
+
+    If `service_radius_km` is given, the radius is enforced as a REAL
+    constraint: a customer beyond that distance from every facility is
+    marked "Unserved (beyond service radius)" rather than silently assigned
+    to its nearest facility regardless of how far away that is. This keeps
+    the map, the per-DC customer counts, and the service-distance metric all
+    consistent with the same radius the optimizer actually used.
     `facilities_df` must have columns: facility_name, lat, lon (at minimum).
     """
     result = demand_df.copy().reset_index(drop=True)
     if facilities_df is None or len(facilities_df) == 0:
-        result["assigned_facility_name"] = None
+        result["assigned_facility_name"] = "Unserved (no facilities)"
         result["distance_to_facility_km"] = None
         return result
 
@@ -268,7 +273,12 @@ def assign_customers_to_facilities(demand_df: pd.DataFrame, facilities_df: pd.Da
     nearest_km = dists_m.min(axis=1) / 1000
 
     facilities_reset = facilities_df.reset_index(drop=True)
-    result["assigned_facility_name"] = facilities_reset.loc[nearest_idx, "facility_name"].values
+    assigned_names = facilities_reset.loc[nearest_idx, "facility_name"].values.astype(object)
+    if service_radius_km is not None:
+        out_of_range = nearest_km > service_radius_km
+        assigned_names[out_of_range] = "Unserved (beyond service radius)"
+
+    result["assigned_facility_name"] = assigned_names
     result["distance_to_facility_km"] = np.round(nearest_km, 2)
     return result
 
@@ -426,16 +436,34 @@ STATE_LOGISTICS_HUBS = {
 }
 
 
+# Broader fallback: the best-known major metro in every US state, used when
+# STATE_LOGISTICS_HUBS above has no specialized entry. Ensures a real named
+# city is always recommended — never a vague "consider alternatives."
+FALLBACK_STATE_MAJOR_CITY = {
+    "Alabama": "Birmingham, AL", "Alaska": "Anchorage, AK", "Arkansas": "Little Rock, AR",
+    "California": "Los Angeles / Inland Empire, CA", "Colorado": "Denver, CO", "Connecticut": "Hartford, CT",
+    "Delaware": "Wilmington, DE", "Florida": "Jacksonville, FL", "Hawaii": "Honolulu, HI",
+    "Idaho": "Boise, ID", "Iowa": "Des Moines, IA", "Kansas": "Wichita, KS",
+    "Louisiana": "New Orleans, LA", "Maine": "Portland, ME", "Maryland": "Baltimore, MD",
+    "Massachusetts": "Boston, MA", "Michigan": "Detroit, MI", "Minnesota": "Minneapolis, MN",
+    "Mississippi": "Jackson, MS", "Montana": "Billings, MT", "Nebraska": "Omaha, NE",
+    "New Hampshire": "Manchester, NH", "New Mexico": "Albuquerque, NM", "New York": "New York City, NY",
+    "North Dakota": "Fargo, ND", "Oklahoma": "Oklahoma City, OK", "Oregon": "Portland, OR",
+    "Rhode Island": "Providence, RI", "South Carolina": "Charleston, SC", "South Dakota": "Sioux Falls, SD",
+    "Utah": "Salt Lake City, UT", "Vermont": "Burlington, VT", "West Virginia": "Charleston, WV",
+    "Wisconsin": "Milwaukee, WI", "Wyoming": "Cheyenne, WY",
+}
+
+
 def suggest_best_next_location(dc_name: str, scores_row: pd.Series, weights: dict,
                                 cand_df: pd.DataFrame, selected_df: pd.DataFrame,
                                 service_radius_km: float, state: str | None = None) -> str:
     """For a site scoring below the quality bar, produce a concrete,
-    data-grounded suggestion rather than a generic "consider alternatives":
-    names the weakest-scoring criterion, recommends a REAL named logistics-hub
-    city in the same state where one is known (rather than an arbitrary
-    reverse-geocoded place that happened to be near the demand centroid),
-    and — using the run's OWN computed lease-cost proxy — flags whether a
-    cheaper unselected candidate exists nearby."""
+    data-grounded suggestion — never a vague "consider alternatives": names
+    the weakest-scoring criterion, and always recommends a real named city
+    (a specialized logistics hub where known, else the state's best-known
+    major metro), plus — for a rental-cost weakness — checks the run's own
+    candidate pool for a genuinely cheaper nearby alternative."""
     criterion_labels = {c["key"]: c["label"] for c in DEFAULT_SCORING_CRITERIA}
     crit_scores = {k: scores_row.get(k, 5) for k in weights if k in criterion_labels}
     if not crit_scores:
@@ -449,6 +477,11 @@ def suggest_best_next_location(dc_name: str, scores_row: pd.Series, weights: dic
     hub = STATE_LOGISTICS_HUBS.get(state) if state else None
     if hub and hub["city"].split(",")[0].split(" / ")[0].strip().lower() not in dc_name.lower():
         suggestion += f"Consider **{hub['city']}** instead — {hub['rationale']} "
+    elif state and state in FALLBACK_STATE_MAJOR_CITY and \
+            FALLBACK_STATE_MAJOR_CITY[state].split(",")[0].split(" / ")[0].strip().lower() not in dc_name.lower():
+        suggestion += (f"Consider **{FALLBACK_STATE_MAJOR_CITY[state]}** instead — the state's largest metro, "
+                       f"generally offering more developed transport and logistics infrastructure than a smaller "
+                       f"nearby location. ")
 
     if weakest_key == "warehouse_rental_cost" and cand_df is not None and len(cand_df) > 0 \
             and selected_df is not None and "lat" in selected_df.columns:
@@ -466,13 +499,6 @@ def suggest_best_next_location(dc_name: str, scores_row: pd.Series, weights: dic
                 suggestion += (f"Within the current candidate pool, site {cheaper['site_id']} "
                                f"(~{cheaper['dist_from_center_km']:.0f} km from cluster center) has an estimated "
                                f"lease cost ~{savings_pct:.0f}% lower — worth evaluating as a nearer-term alternative.")
-            elif not hub:
-                suggestion += "No nearby unselected candidate offers a meaningfully lower estimated lease cost in this run."
-        elif not hub:
-            suggestion += "Consider evaluating nearby alternate sites for better rental terms."
-    else:
-        if not hub:
-            suggestion += "Consider evaluating alternate nearby candidates or offsetting with a higher score elsewhere before committing."
 
     return suggestion
 
@@ -709,18 +735,25 @@ def greedy_select_sites(demand_df: pd.DataFrame, cand_df: pd.DataFrame,
     selected_df = pd.DataFrame(selected_rows, columns=expected_cols) if selected_rows else pd.DataFrame(columns=expected_cols)
     final_covered_demand = demand_vals[covered].sum()
 
-    # Weighted average service distance — measured against ALL open
-    # facilities (existing kept open + every new site just selected),
-    # regardless of the coverage radius. This is a service-quality KPI,
-    # distinct from coverage %: a demand point can be "outside" the
-    # service radius and still have a nearest-facility distance.
+    # Weighted average service distance — measured ONLY over demand actually
+    # served within the service radius. The radius is a real constraint:
+    # a demand point beyond every facility's radius is "unserved," and
+    # including its distance in this average would misrepresent service
+    # quality for the network as actually configured.
     facility_frames = []
     if existing_df is not None and len(existing_df) > 0:
         facility_frames.append(existing_df[["lat", "lon"]])
     if len(selected_df) > 0:
         facility_frames.append(selected_df[["lat", "lon"]])
     combined_facilities = pd.concat(facility_frames, ignore_index=True) if facility_frames else None
-    weighted_avg_distance_km = compute_weighted_avg_distance_km(demand_df, combined_facilities, epsg)
+
+    if combined_facilities is not None and covered.any():
+        served_demand_df = demand_df[covered].reset_index(drop=True)
+        weighted_avg_distance_km = compute_weighted_avg_distance_km(served_demand_df, combined_facilities, epsg)
+    else:
+        weighted_avg_distance_km = None
+
+    unserved_demand = demand_vals[~covered].sum()
 
     summary = {
         "total_demand": round(total_demand, 1),
@@ -728,6 +761,8 @@ def greedy_select_sites(demand_df: pd.DataFrame, cand_df: pd.DataFrame,
         "baseline_coverage_pct": round(baseline_covered_demand / total_demand * 100, 1) if total_demand > 0 else 0,
         "final_covered_demand": round(final_covered_demand, 1),
         "final_coverage_pct": round(final_covered_demand / total_demand * 100, 1) if total_demand > 0 else 0,
+        "unserved_demand": round(unserved_demand, 1),
+        "unserved_demand_pct": round(unserved_demand / total_demand * 100, 1) if total_demand > 0 else 0,
         "sites_selected": len(selected_idx),
         "target_met": (mode == "service_target" and
                         (final_covered_demand / total_demand * 100 if total_demand > 0 else 0) >= target_pct),
