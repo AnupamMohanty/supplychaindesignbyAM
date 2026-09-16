@@ -129,9 +129,19 @@ div[data-testid="stChatMessage"] { border-radius: 12px; }
     display: inline-block; background: #0B6B2C; color: #FFFFFF; font-weight: 700;
     font-size: 11px; padding: 3px 10px; border-radius: 12px; letter-spacing: 0.3px;
 }
+@keyframes mks-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+@keyframes mks-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
 .status-badge-dev {
-    display: inline-block; background: #DCE3F0; color: #5A6B8C; font-weight: 700;
-    font-size: 11px; padding: 3px 10px; border-radius: 12px; letter-spacing: 0.3px;
+    display: inline-flex; align-items: center; gap: 6px;
+    background: linear-gradient(90deg, #EAF2FB, #DCE3F0, #EAF2FB);
+    background-size: 200% 100%;
+    color: #0B3D91; font-weight: 700; font-size: 11px; padding: 4px 11px 4px 8px;
+    border-radius: 12px; letter-spacing: 0.3px; animation: mks-pulse 1.8s ease-in-out infinite;
+}
+.mks-spinner {
+    display: inline-block; width: 10px; height: 10px; flex-shrink: 0;
+    border: 2px solid #B7C0D6; border-top-color: #0B3D91; border-radius: 50%;
+    animation: mks-spin 0.7s linear infinite;
 }
 .solution-title { font-size: 17px; font-weight: 800; color: #0B3D91; margin: 12px 0 4px 0; }
 .solution-title.muted { color: #6B7A99; }
@@ -343,7 +353,7 @@ if st.session_state.view == "landing":
             <div class="bio-avatar">AM</div>
             <div>
                 <p class="bio-name">Anupam Mohanty</p>
-                <p class="bio-creds">Senior Manager, Global Supply Chain Network Strategy &amp; Analytics</p>
+                <p class="bio-creds">Specialist, Global Supply Chain Network Strategy &amp; Analytics</p>
                 <p class="bio-creds">12+ years global experience · MBA, IIM Udaipur · MS Global Supply Chain, Purdue University</p>
                 <p class="bio-tag">Specializing in network design, scenario modelling, and AI-enabled supply
                 chain analytics.</p>
@@ -376,7 +386,7 @@ if st.session_state.view == "landing":
     with row1_col2:
         st.markdown(f"""<div class="solution-card dev">
             {MKS_ICON_FLOW}
-            <span class="status-badge-dev">UNDER DEVELOPMENT</span>
+            <span class="status-badge-dev"><span class="mks-spinner"></span>IN DEVELOPMENT</span>
             <div class="solution-title muted">2. Product Flow Optimization</div>
             <div class="solution-desc">Optimizing how product physically moves through the network — routing,
             mode selection, and flow-cost minimization across the supply chain.</div>
@@ -386,7 +396,7 @@ if st.session_state.view == "landing":
     with row2_col1:
         st.markdown(f"""<div class="solution-card dev">
             {MKS_ICON_INVENTORY}
-            <span class="status-badge-dev">UNDER DEVELOPMENT</span>
+            <span class="status-badge-dev"><span class="mks-spinner"></span>IN DEVELOPMENT</span>
             <div class="solution-title muted">3. Inventory Optimization &amp; Classification</div>
             <div class="solution-desc">Right-sizing inventory and classifying SKUs (ABC/XYZ and beyond) to
             balance service levels against working capital.</div>
@@ -396,7 +406,7 @@ if st.session_state.view == "landing":
     with row2_col2:
         st.markdown(f"""<div class="solution-card dev">
             {MKS_ICON_TWIN}
-            <span class="status-badge-dev">UNDER DEVELOPMENT</span>
+            <span class="status-badge-dev"><span class="mks-spinner"></span>IN DEVELOPMENT</span>
             <div class="solution-title muted">4. Supply Chain Digital Twin</div>
             <div class="solution-desc">A living simulation of the end-to-end network — stress-test disruptions
             and policy changes before committing to them in the real world.</div>
@@ -499,68 +509,79 @@ if st.session_state.view != "landing":
                 st.caption(f"{n_runnable}/2 scenarios with completed runs — free, no API key needed.")
 
         st.divider()
-        st.markdown("### ⚙️ Model settings")
+
+if st.session_state.view == "input":
+    _step_indicator("data")
+
+    with st.container(border=True):
+        st.markdown("""<div style="background:#0B3D91; border-radius:12px; padding:12px 16px; margin-bottom:4px;">
+            <span style="color:#F5C518; font-weight:800; font-size:16px;">⚙️ Model Configuration &amp; Save Scenario</span>
+            </div>""", unsafe_allow_html=True)
 
         uom_choice = st.selectbox("Unit of measure for this model", UOM_OPTIONS,
                                    index=UOM_OPTIONS.index(st.session_state.model_uom)
                                    if st.session_state.model_uom in UOM_OPTIONS else 0,
+                                   key="cfg_uom",
                                    help="Every demand_value in this model is measured in this single unit. "
                                         "One unit for the whole model — mixing units breaks the math.")
         st.session_state.model_uom = uom_choice
         if uom_choice == "Other (specify below)":
-            st.session_state.model_uom_custom = st.text_input("Custom unit name", value=st.session_state.model_uom_custom)
+            st.session_state.model_uom_custom = st.text_input("Custom unit name", value=st.session_state.model_uom_custom,
+                                                                key="cfg_uom_custom")
         active_uom = st.session_state.model_uom_custom if uom_choice == "Other (specify below)" and st.session_state.model_uom_custom else uom_choice
 
+        cfg_col1, cfg_col2 = st.columns(2)
+        with cfg_col1:
+            st.markdown("**🎯 Optimize by**")
+            opt_mode = st.segmented_control(
+                "Choose optimization mode", options=["Number of new sites", "Service coverage target (%)"],
+                default="Number of new sites", label_visibility="collapsed", key="cfg_opt_mode",
+            )
+            opt_mode = opt_mode or "Number of new sites"
+
+            INTERNAL_MAX_SITES_CAP = 25  # safety cap on the search, not user-facing
+
+            if opt_mode == "Number of new sites":
+                num_sites = st.number_input("Number of new sites to open", min_value=1, max_value=50, value=5, step=1,
+                                             key="cfg_num_sites")
+                target_pct, max_sites_cap, mode_key = None, None, "num_sites"
+            else:
+                target_pct = st.number_input("Target % of demand to serve", min_value=1.0,
+                                              max_value=100.0, value=80.0, step=1.0, key="cfg_target_pct")
+                num_sites, mode_key = None, "service_target"
+                max_sites_cap = INTERNAL_MAX_SITES_CAP
+
+            st.session_state.include_existing = st.checkbox(
+                "Include existing sites in this run?", value=st.session_state.include_existing, key="cfg_include_existing",
+                help="Uncheck to run a pure greenfield analysis, ignoring the Existing Facilities table entirely."
+            )
+
+        with cfg_col2:
+            st.markdown("**⏱️ Service coverage — time & travel capacity**")
+            time_col_a, time_col_b = st.columns(2)
+            with time_col_a:
+                service_time_value = st.number_input("Desired service time", min_value=0.1, value=1.0, step=0.5,
+                                                       key="cfg_service_time_value")
+            with time_col_b:
+                service_time_unit = st.selectbox("Unit", ["Days", "Hours"], key="cfg_service_time_unit")
+
+            miles_per_day = st.number_input("Last-mile daily travel capacity (miles/day)", min_value=50, max_value=1000,
+                                             value=400, step=50, key="cfg_miles_per_day",
+                                             help="How far a delivery truck can realistically travel in one day. "
+                                                  "This becomes a REAL hard constraint — a customer beyond this "
+                                                  "distance from every DC is marked Unserved.")
+
+            service_radius_km, service_radius_miles = compute_service_radius(service_time_value, service_time_unit, miles_per_day)
+            st.markdown(f"→ Effective service radius: **{service_radius_km:,.0f} km** ({service_radius_miles:,.0f} miles)")
+
         st.divider()
-        st.markdown("### 🎯 Optimize by")
-        opt_mode = st.segmented_control(
-            "Choose optimization mode", options=["Number of new sites", "Service coverage target (%)"],
-            default="Number of new sites", label_visibility="collapsed",
-        )
-        opt_mode = opt_mode or "Number of new sites"
-
-        INTERNAL_MAX_SITES_CAP = 25  # safety cap on the search, not user-facing — avoids runaway site counts
-
-        if opt_mode == "Number of new sites":
-            num_sites = st.number_input("Number of new sites to open", min_value=1, max_value=50, value=5, step=1)
-            target_pct, max_sites_cap, mode_key = None, None, "num_sites"
-        else:
-            target_pct = st.number_input("Target % of demand to serve", min_value=1.0,
-                                          max_value=100.0, value=80.0, step=1.0)
-            num_sites, mode_key = None, "service_target"
-            max_sites_cap = INTERNAL_MAX_SITES_CAP
-
-        st.markdown("**Service coverage — desired time & travel capacity**")
-        col_a, col_b = st.columns(2)
-        with col_a:
-            service_time_value = st.number_input("Desired service time", min_value=0.1, value=1.0, step=0.5)
-        with col_b:
-            service_time_unit = st.selectbox("Unit", ["Days", "Hours"])
-
-        miles_per_day = st.number_input("Last-mile daily travel capacity (miles/day)", min_value=50, max_value=1000,
-                                         value=400, step=50,
-                                         help="Assumption: how far a delivery truck can realistically travel in one day. "
-                                              "This becomes a REAL hard constraint on the model — a customer beyond "
-                                              "this distance from every DC is marked Unserved, not silently assigned "
-                                              "to whichever facility happens to be nearest.")
-
-        service_radius_km, service_radius_miles = compute_service_radius(service_time_value, service_time_unit, miles_per_day)
-        st.caption(f"→ Effective service radius: **{service_radius_km:,.0f} km** ({service_radius_miles:,.0f} miles)")
-
-        st.session_state.include_existing = st.checkbox(
-            "Include existing sites in this run?", value=st.session_state.include_existing,
-            help="Uncheck to run a pure greenfield analysis, ignoring the Existing Facilities table entirely."
-        )
-
-        st.divider()
-        st.markdown("### 💾 Save current scenario")
-
+        st.markdown("**💾 Save current scenario**")
         scenario_name = st.text_input("Scenario name", key="scenario_name_input", placeholder="e.g. Baseline 2026")
         is_baseline_checkbox = st.checkbox("Consider this scenario as baseline?", key="is_baseline_checkbox")
 
         sc_col1, sc_col2 = st.columns(2)
         with sc_col1:
-            save_scenario_clicked = st.button("💾 Save", width="stretch")
+            save_scenario_clicked = st.button("💾 Save Scenario", type="primary", width="stretch")
         with sc_col2:
             clear_scenario_clicked = st.button("🗑️ Clear inputs", width="stretch")
 
@@ -603,25 +624,6 @@ if st.session_state.view != "landing":
             st.session_state["view"] = "input"
             st.success("Inputs cleared — ready for a new scenario.")
             st.rerun()
-
-
-# =========================================================================
-# INPUT VIEW
-# =========================================================================
-if st.session_state.view == "input":
-    _step_indicator("data")
-
-    with st.popover("⚙️ Model Configuration", width="stretch"):
-        st.markdown(f"**Unit of measure:** {active_uom}")
-        if mode_key == "num_sites":
-            st.markdown(f"**Optimize by:** Number of new sites — **{num_sites}**")
-        else:
-            st.markdown(f"**Optimize by:** Service coverage target — **{target_pct}%**")
-        st.markdown(f"**Desired service time:** {service_time_value} {service_time_unit}")
-        st.markdown(f"**Last-mile travel capacity:** {miles_per_day} miles/day")
-        st.markdown(f"**Effective service radius:** {service_radius_km:,.0f} km ({service_radius_miles:,.0f} miles)")
-        st.markdown(f"**Include existing sites:** {'Yes' if st.session_state.include_existing else 'No'}")
-        st.caption("Change these in the sidebar (☰ top-left if it's collapsed).")
 
     with st.container(border=True):
         st.markdown('<div class="section-title">🤖 Load a Basefile (AI-Assisted)</div>', unsafe_allow_html=True)
@@ -903,6 +905,12 @@ if st.session_state.view == "input":
         st.session_state["run_max_sites_cap"] = max_sites_cap
         st.session_state["run_uom"] = active_uom
         st.session_state["run_cand_df"] = cand_df
+        st.session_state["run_opt_mode"] = opt_mode
+        st.session_state["run_num_sites"] = num_sites
+        st.session_state["run_service_time_value"] = service_time_value
+        st.session_state["run_service_time_unit"] = service_time_unit
+        st.session_state["run_miles_per_day"] = miles_per_day
+        st.session_state["run_include_existing"] = st.session_state.include_existing
         st.session_state["view"] = "results"
         st.rerun()
 
@@ -1062,6 +1070,53 @@ elif st.session_state.view == "results":
     run_uom = st.session_state["run_uom"]
 
     st.success(f"✅ Model run complete — run time: {st.session_state['run_time']:.2f} secs")
+
+    with st.container(border=True):
+        rs_col1, rs_col2, rs_col3, rs_col4 = st.columns([2, 2, 1, 1])
+        with rs_col1:
+            results_scenario_name = st.text_input("💾 Save this scenario as", key="results_scenario_name_input",
+                                                    placeholder="e.g. Baseline 2026", label_visibility="visible")
+        with rs_col2:
+            st.markdown("<br>", unsafe_allow_html=True)
+            results_is_baseline = st.checkbox("Set as baseline?", key="results_is_baseline_checkbox")
+        with rs_col3:
+            st.markdown("<br>", unsafe_allow_html=True)
+            results_save_clicked = st.button("💾 Save Scenario", type="primary", width="stretch", key="results_save_btn")
+        with rs_col4:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("⚙️ Edit Configuration", width="stretch", key="results_edit_config_btn"):
+                st.session_state["view"] = "input"
+                st.rerun()
+
+        if results_save_clicked:
+            if not results_scenario_name.strip():
+                st.warning("Give the scenario a name before saving.")
+            else:
+                snapshot = {
+                    "products_df": st.session_state.products_df.copy(),
+                    "demand_df": st.session_state.demand_df.copy(),
+                    "existing_df": st.session_state.existing_df.copy(),
+                    "model_uom": run_uom,
+                    "include_existing": st.session_state.get("run_include_existing", st.session_state.include_existing),
+                    "service_time_value": st.session_state.get("run_service_time_value"),
+                    "service_time_unit": st.session_state.get("run_service_time_unit"),
+                    "miles_per_day": st.session_state.get("run_miles_per_day"),
+                    "service_radius_km": run_service_radius_km,
+                    "opt_mode": st.session_state.get("run_opt_mode"),
+                    "num_sites": st.session_state.get("run_num_sites"),
+                    "target_pct": run_target_pct,
+                    "max_sites_cap": run_max_sites_cap,
+                    "is_baseline": results_is_baseline,
+                    "summary": summary,
+                    "selected_df": selected_df,
+                    "run_demand_df": run_demand_df,
+                }
+                st.session_state.scenarios[results_scenario_name.strip()] = snapshot
+                if results_is_baseline:
+                    st.session_state.baseline_scenario = results_scenario_name.strip()
+                st.success(f"Scenario '{results_scenario_name.strip()}' saved" +
+                           (" as baseline." if results_is_baseline else "."))
+                st.rerun()
 
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Sites opened", summary["sites_selected"])
