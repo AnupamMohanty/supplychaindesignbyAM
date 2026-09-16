@@ -122,7 +122,7 @@ div[data-testid="stChatMessage"] { border-radius: 12px; }
 .bio-creds { font-size: 13px; color: #4A5A78; font-weight: 600; margin-top: 2px; }
 .bio-tag { font-size: 13px; color: #6B7A99; margin-top: 4px; }
 .solution-card {
-    border-radius: 16px; padding: 22px; height: 100%;
+    border-radius: 16px; padding: 0; height: 100%; overflow: hidden;
 }
 .solution-card.available {
     background: linear-gradient(135deg, #FFFFFF 0%, #EAF2FB 100%);
@@ -131,6 +131,19 @@ div[data-testid="stChatMessage"] { border-radius: 12px; }
 .solution-card.dev {
     background: #F7F9FC; border: 1px solid #E7ECF5;
 }
+.solution-card-body { padding: 18px 22px 22px 22px; }
+.solution-card-body.no-image { padding-top: 22px; }
+.solution-image-banner {
+    position: relative; width: 100%; height: 130px; overflow: hidden;
+}
+.solution-image-banner img {
+    width: 100%; height: 100%; object-fit: cover; display: block;
+}
+.solution-image-banner .img-overlay {
+    position: absolute; inset: 0;
+    background: linear-gradient(180deg, rgba(11,61,145,0.15) 0%, rgba(11,61,145,0.55) 100%);
+}
+.solution-image-banner .badge-wrap { position: absolute; top: 10px; right: 10px; }
 .status-badge-live {
     display: inline-block; background: #0B6B2C; color: #FFFFFF; font-weight: 700;
     font-size: 11px; padding: 3px 10px; border-radius: 12px; letter-spacing: 0.3px;
@@ -396,7 +409,7 @@ if st.session_state.view == "landing":
             <div>
                 <p class="bio-name">Anupam Mohanty</p>
                 <p class="bio-creds">Specialist, Global Supply Chain Network Strategy &amp; Analytics</p>
-                <p class="bio-creds">12+ years global experience · MBA, IIM Udaipur · MS Global Supply Chain, Purdue University</p>
+                <p class="bio-creds">~15 years global experience · MBA, IIM Udaipur · MS Global Supply Chain, Purdue University</p>
                 <p class="bio-tag">Specializing in network design, scenario modelling, and AI-enabled supply
                 chain analytics.</p>
             </div>
@@ -415,11 +428,17 @@ if st.session_state.view == "landing":
 
     with row1_col1:
         st.markdown(f"""<div class="solution-card available">
-            {MKS_ICON_DESIGN}
-            <span class="status-badge-live">● LIVE NOW</span>
-            <div class="solution-title">1. Supply Chain Design</div>
-            <div class="solution-desc">Greenfield facility location optimization — demand, network coverage,
-            customer-to-DC assignment, and causal site scoring, all in one flow.</div>
+            <div class="solution-image-banner">
+                <img src="https://images.unsplash.com/photo-1494412651409-8963ce7935a7?w=800&q=70&auto=format&fit=crop" alt="Supply chain network"/>
+                <div class="img-overlay"></div>
+                <div class="badge-wrap"><span class="status-badge-live">● LIVE NOW</span></div>
+            </div>
+            <div class="solution-card-body">
+                {MKS_ICON_DESIGN}
+                <div class="solution-title">1. Supply Chain Design</div>
+                <div class="solution-desc">Greenfield facility location optimization — demand, network coverage,
+                customer-to-DC assignment, and causal site scoring, all in one flow.</div>
+            </div>
         </div>""", unsafe_allow_html=True)
         if st.button("🚀 Launch Supply Chain Design", type="primary", width="stretch", key="launch_design"):
             st.session_state["view"] = "input"
@@ -427,45 +446,63 @@ if st.session_state.view == "landing":
 
     with row1_col2:
         st.markdown(f"""<div class="solution-card dev">
-            {MKS_ICON_FLOW}
-            <span class="status-badge-dev"><span class="mks-spinner"></span>IN DEVELOPMENT</span>
-            <div class="solution-title muted">2. Product Flow Optimization</div>
-            <div class="solution-desc">Optimizing how product physically flows through the network.</div>
-            <div class="wireframe-grid">
-                <div class="wireframe-box">Current Supply<br>Chain Network</div>
-                <div class="wireframe-box">Costs</div>
-                <div class="wireframe-box">Service<br>Constraints</div>
-                <div class="wireframe-box">Scenarios</div>
+            <div class="solution-image-banner">
+                <img src="https://images.unsplash.com/photo-1616432043562-3671ea2e5242?w=800&q=70&auto=format&fit=crop" alt="Product flow"/>
+                <div class="img-overlay"></div>
+                <div class="badge-wrap"><span class="status-badge-dev"><span class="mks-spinner"></span>IN DEVELOPMENT</span></div>
+            </div>
+            <div class="solution-card-body">
+                {MKS_ICON_FLOW}
+                <div class="solution-title muted">2. Product Flow Optimization</div>
+                <div class="solution-desc">Optimizing how product physically flows through the network.</div>
+                <div class="wireframe-grid">
+                    <div class="wireframe-box">Current Supply<br>Chain Network</div>
+                    <div class="wireframe-box">Costs</div>
+                    <div class="wireframe-box">Service<br>Constraints</div>
+                    <div class="wireframe-box">Scenarios</div>
+                </div>
             </div>
         </div>""", unsafe_allow_html=True)
         st.button("Coming soon", disabled=True, width="stretch", key="launch_flow")
 
     with row2_col1:
         st.markdown(f"""<div class="solution-card dev">
-            {MKS_ICON_INVENTORY}
-            <span class="status-badge-dev"><span class="mks-spinner"></span>IN DEVELOPMENT</span>
-            <div class="solution-title muted">3. Inventory Optimization &amp; Classification</div>
-            <div class="solution-desc">Right-sizing inventory to balance service levels against working capital.</div>
-            <div class="wireframe-grid">
-                <div class="wireframe-box">Safety Stock<br>Strategy</div>
-                <div class="wireframe-box">Cycle Stock</div>
-                <div class="wireframe-box">Replenishment<br>Policies</div>
-                <div class="wireframe-box">Warehousing<br>Right-Sizing</div>
+            <div class="solution-image-banner">
+                <img src="https://images.unsplash.com/photo-1592085198739-ffcad7f36b54?w=800&q=70&auto=format&fit=crop" alt="Warehouse inventory"/>
+                <div class="img-overlay"></div>
+                <div class="badge-wrap"><span class="status-badge-dev"><span class="mks-spinner"></span>IN DEVELOPMENT</span></div>
+            </div>
+            <div class="solution-card-body">
+                {MKS_ICON_INVENTORY}
+                <div class="solution-title muted">3. Inventory Optimization &amp; Classification</div>
+                <div class="solution-desc">Right-sizing inventory to balance service levels against working capital.</div>
+                <div class="wireframe-grid">
+                    <div class="wireframe-box">Safety Stock<br>Strategy</div>
+                    <div class="wireframe-box">Cycle Stock</div>
+                    <div class="wireframe-box">Replenishment<br>Policies</div>
+                    <div class="wireframe-box">Warehousing<br>Right-Sizing</div>
+                </div>
             </div>
         </div>""", unsafe_allow_html=True)
         st.button("Coming soon", disabled=True, width="stretch", key="launch_inventory")
 
     with row2_col2:
         st.markdown(f"""<div class="solution-card dev">
-            {MKS_ICON_TWIN}
-            <span class="status-badge-dev"><span class="mks-spinner"></span>IN DEVELOPMENT</span>
-            <div class="solution-title muted">4. Supply Chain Digital Twin</div>
-            <div class="solution-desc">A living simulation of the end-to-end network.</div>
-            <div class="wireframe-grid">
-                <div class="wireframe-box">Cost<br>Breakdown</div>
-                <div class="wireframe-box">Level 1 KPIs</div>
-                <div class="wireframe-box">Level 2 KPIs</div>
-                <div class="wireframe-box">What-If<br>Simulations</div>
+            <div class="solution-image-banner">
+                <img src="https://images.unsplash.com/photo-1494412519320-aa613dfb7738?w=800&q=70&auto=format&fit=crop" alt="Digital twin network overview"/>
+                <div class="img-overlay"></div>
+                <div class="badge-wrap"><span class="status-badge-dev"><span class="mks-spinner"></span>IN DEVELOPMENT</span></div>
+            </div>
+            <div class="solution-card-body">
+                {MKS_ICON_TWIN}
+                <div class="solution-title muted">4. Supply Chain Digital Twin</div>
+                <div class="solution-desc">A living simulation of the end-to-end network.</div>
+                <div class="wireframe-grid">
+                    <div class="wireframe-box">Cost<br>Breakdown</div>
+                    <div class="wireframe-box">Level 1 KPIs</div>
+                    <div class="wireframe-box">Level 2 KPIs</div>
+                    <div class="wireframe-box">What-If<br>Simulations</div>
+                </div>
             </div>
         </div>""", unsafe_allow_html=True)
         st.button("Coming soon", disabled=True, width="stretch", key="launch_twin")
