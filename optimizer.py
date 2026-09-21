@@ -283,6 +283,45 @@ def assign_customers_to_facilities(demand_df: pd.DataFrame, facilities_df: pd.Da
     return result
 
 
+def compute_current_network_health(demand_df: pd.DataFrame, existing_df: pd.DataFrame,
+                                    service_radius_km: float) -> dict:
+    """Diagnose how well an existing ('current') network serves current demand,
+    with ZERO new sites opened — a pure baseline health check. Unlike
+    greedy_select_sites, this never touches candidate generation or the
+    greedy loop; it's just coverage math against the facilities already
+    provided. Returns a summary dict in the same shape as greedy_select_sites'
+    summary (sites_selected=0), so it can be saved as a scenario and compared
+    against future what-if runs on equal footing."""
+    epsg = estimate_utm_epsg(demand_df["lon"].mean(), demand_df["lat"].mean())
+    demand_vals = demand_df["demand_value"].values
+    total_demand = demand_vals.sum()
+    n_demand = len(demand_df)
+
+    existing_cov = compute_coverage_matrix(existing_df, demand_df, service_radius_km, epsg)
+    covered = existing_cov.any(axis=0) if len(existing_cov) > 0 else np.zeros(n_demand, dtype=bool)
+    covered_demand = demand_vals[covered].sum()
+    unserved_demand = demand_vals[~covered].sum()
+
+    if existing_df is not None and len(existing_df) > 0 and covered.any():
+        served_demand_df = demand_df[covered].reset_index(drop=True)
+        weighted_avg_distance_km = compute_weighted_avg_distance_km(served_demand_df, existing_df, epsg)
+    else:
+        weighted_avg_distance_km = None
+
+    return {
+        "total_demand": round(total_demand, 1),
+        "baseline_covered_demand": round(covered_demand, 1),
+        "baseline_coverage_pct": round(covered_demand / total_demand * 100, 1) if total_demand > 0 else 0,
+        "final_covered_demand": round(covered_demand, 1),
+        "final_coverage_pct": round(covered_demand / total_demand * 100, 1) if total_demand > 0 else 0,
+        "unserved_demand": round(unserved_demand, 1),
+        "unserved_demand_pct": round(unserved_demand / total_demand * 100, 1) if total_demand > 0 else 0,
+        "sites_selected": 0,
+        "target_met": False,
+        "weighted_avg_distance_km": round(weighted_avg_distance_km, 2) if weighted_avg_distance_km is not None else None,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Site scoring — weighted multi-criteria evaluation of opened locations
 # ---------------------------------------------------------------------------
