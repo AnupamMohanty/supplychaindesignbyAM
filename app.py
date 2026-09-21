@@ -1,5 +1,6 @@
 import io
 import time
+from datetime import datetime
 
 import folium
 import numpy as np
@@ -450,6 +451,8 @@ defaults = {
     "scenarios": {},
     "baseline_scenario": None,
     "chat_history": [],
+    "auto_run_order": [],
+    "auto_run_counter": 0,
 }
 for k, v in defaults.items():
     if k not in st.session_state:
@@ -1134,6 +1137,8 @@ if st.session_state.view == "input":
         st.error("Fix the following before you can run the optimizer:\n\n" + "\n".join(f"- {p}" for p in problems))
 
     run_button = st.button("▶  Run optimization", type="primary", disabled=not ready_to_run, width="stretch")
+    st.caption("🕒 Every run is automatically kept (last 5) — no need to manually save just to keep a version. "
+               "See them in 💾 Saved Scenarios in the sidebar, tagged with a run number and time.")
 
     if run_button and ready_to_run:
         placeholder = st.empty()
@@ -1201,6 +1206,39 @@ if st.session_state.view == "input":
         st.session_state["run_service_time_unit"] = service_time_unit
         st.session_state["run_miles_per_day"] = miles_per_day
         st.session_state["run_include_existing"] = st.session_state.include_existing
+
+        # Auto-save this run into history — every completed run is kept
+        # automatically (last 5), independent of manual "Save Scenario".
+        st.session_state.auto_run_counter += 1
+        auto_name = f"🕒 Run #{st.session_state.auto_run_counter} · {datetime.now().strftime('%H:%M:%S')}"
+        st.session_state.scenarios[auto_name] = {
+            "products_df": st.session_state.products_df.copy(),
+            "demand_df": demand_df.copy(),
+            "existing_df": existing_df.copy(),
+            "model_uom": active_uom,
+            "include_existing": st.session_state.include_existing,
+            "service_time_value": service_time_value,
+            "service_time_unit": service_time_unit,
+            "miles_per_day": miles_per_day,
+            "service_radius_km": service_radius_km,
+            "opt_mode": opt_mode,
+            "num_sites": num_sites,
+            "target_pct": target_pct,
+            "max_sites_cap": max_sites_cap,
+            "is_baseline": False,
+            "summary": summary,
+            "selected_df": selected_df,
+            "run_demand_df": assigned_demand_df,
+            "auto": True,
+        }
+        st.session_state.auto_run_order.append(auto_name)
+        if len(st.session_state.auto_run_order) > 5:
+            oldest = st.session_state.auto_run_order.pop(0)
+            st.session_state.scenarios.pop(oldest, None)
+            st.session_state.selected_for_compare.discard(oldest)
+            if st.session_state.baseline_scenario == oldest:
+                st.session_state.baseline_scenario = None
+
         st.session_state["view"] = "results"
         st.rerun()
 
