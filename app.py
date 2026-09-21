@@ -3,6 +3,7 @@ import time
 
 import folium
 import numpy as np
+import plotly.graph_objects as go
 import pandas as pd
 import streamlit as st
 from streamlit_folium import st_folium
@@ -17,6 +18,7 @@ from optimizer import (
     build_mapping_prompt,
     call_claude_api,
     classify_comparison_intent,
+    compute_current_network_health,
     compute_service_radius,
     compute_weighted_scores,
     coordinates_ready,
@@ -172,6 +174,19 @@ div[data-testid="stChatMessage"] { border-radius: 12px; }
     background: #FFFFFF; border: 1.5px dashed #C3CEE0; border-radius: 6px;
     padding: 8px 6px; font-size: 10px; font-weight: 700; color: #8C99B8;
     text-align: center; letter-spacing: 0.2px;
+}
+@media (max-width: 640px) {
+    .mks-hero, .hero { padding: 22px 18px; }
+    .mks-hero h1, .hero h1 { font-size: 24px; }
+    .mks-hero .headline { font-size: 15px; }
+    .hero p { font-size: 13px; }
+    .bio-card { flex-direction: column; text-align: center; padding: 18px; }
+    .bio-avatar { margin: 0 auto; }
+    .solution-image-banner { height: 140px; }
+    .section-title { font-size: 15px; }
+    .rec-card { padding: 14px 16px; font-size: 13px; }
+    div[data-testid="stMetric"] { padding: 10px 12px; }
+    div[data-testid="stMetricValue"] { font-size: 20px; }
 }
 </style>""", unsafe_allow_html=True)
 
@@ -349,6 +364,31 @@ def build_network_map(run_demand_df, run_existing_df, selected_df, run_service_r
     return m
 
 
+def build_thin_bar_chart(comp_df, column, baseline_name=None, value_suffix="", height=260):
+    """A polished, thin bar chart with value labels and baseline highlighting —
+    used across every scenario comparison view instead of Streamlit's plain
+    default bar_chart, per request for 'attractive thinner graphs with
+    indicators'. Baseline scenario (if any) is highlighted in gold."""
+    names = list(comp_df.index)
+    values = comp_df[column].tolist()
+    colors = ["#F5C518" if n == baseline_name else "#0B3D91" for n in names]
+    text_labels = [f"{v:.1f}{value_suffix}" if v is not None else "—" for v in values]
+
+    fig = go.Figure(go.Bar(
+        x=names, y=values, width=0.38, marker_color=colors,
+        text=text_labels, textposition="outside", textfont=dict(size=12, color="#0B3D91"),
+        marker_line_width=0,
+    ))
+    fig.update_layout(
+        height=height, margin=dict(l=10, r=10, t=10, b=10),
+        plot_bgcolor="#FFFFFF", paper_bgcolor="#FFFFFF",
+        yaxis=dict(showgrid=True, gridcolor="#EEF2F9", zeroline=False, showticklabels=False),
+        xaxis=dict(showgrid=False, tickfont=dict(size=12, color="#4A5A78")),
+        showlegend=False, bargap=0.5,
+    )
+    return fig
+
+
 def build_scenario_recommendation(selected_df, weights=None) -> list:
     """Build the same recommendation-text synthesis used in Results view,
     from just a scenario's selected_df — usable standalone in Compare view
@@ -469,7 +509,7 @@ if st.session_state.view == "landing":
     row2_col1, row2_col2 = st.columns(2)
 
     with row1_col1:
-        st.markdown(f"""<div class="solution-card available">
+        st.markdown(f"""<div class="solution-card available" style="height:390px;">
             <div class="solution-image-banner">
                 <img src="https://images.unsplash.com/photo-1524661135-423995f22d0b?w=900&q=75&auto=format&fit=crop" alt="Global supply chain map"/>
                 <div class="img-overlay"></div>
@@ -479,9 +519,15 @@ if st.session_state.view == "landing":
                 {MKS_ICON_DESIGN}
                 <div class="solution-title">1. Supply Chain Design</div>
                 <div class="solution-desc">Greenfield facility location optimization — demand, network coverage,
-                customer-to-DC assignment, and causal site scoring, all in one flow.</div>
+                customer-to-DC assignment, and causal site scoring, all in one flow. <em>Click the card to open.</em></div>
             </div>
-        </div>""", unsafe_allow_html=True)
+        </div>
+        <style>
+        .st-key-launch_design {{ margin-top: -390px; }}
+        .st-key-launch_design button {{
+            height: 390px; width: 100%; opacity: 0; cursor: pointer; border-radius: 16px;
+        }}
+        </style>""", unsafe_allow_html=True)
         if st.button("🚀 Launch Supply Chain Design", type="primary", width="stretch", key="launch_design"):
             st.session_state["view"] = "input"
             st.rerun()
@@ -489,7 +535,8 @@ if st.session_state.view == "landing":
     with row1_col2:
         st.markdown(f"""<div class="solution-card dev">
             <div class="solution-image-banner">
-                {MKS_FLOW_DIAGRAM_BANNER}
+                <img src="https://images.unsplash.com/photo-1718289518008-2a6e78a87488?w=900&q=75&auto=format&fit=crop" alt="Global supply chain flow"/>
+                <div class="img-overlay"></div>
                 <div class="badge-wrap"><span class="status-badge-dev"><span class="mks-spinner"></span>IN DEVELOPMENT</span></div>
             </div>
             <div class="solution-card-body">
@@ -987,6 +1034,84 @@ if st.session_state.view == "input":
                 st.warning(f"Geocoding complete, but {len(failed_e)} row(s) could not be resolved.")
             st.rerun()
 
+    st.divider()
+    with st.container(border=True):
+        st.markdown('<div class="section-title">📡 What is your current network?</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-sub">If you\'ve filled in your current facilities above (Existing '
+                     'Facilities table) and your demand, run a health check to see how well your network serves '
+                     'you <b>today</b> — before any optimization. This becomes your baseline: every future scenario '
+                     'you save will be compared against it.</div>', unsafe_allow_html=True)
+
+        health_demand_ok, health_demand_msg = validate_demand_df(st.session_state.demand_df)
+        health_coords_ok, health_coords_msg = coordinates_ready(st.session_state.demand_df)
+        health_existing_coords_ok, health_existing_coords_msg = coordinates_ready(st.session_state.existing_df)
+        health_ready = health_demand_ok and health_coords_ok and health_existing_coords_ok
+
+        if not health_ready:
+            reasons = []
+            if not health_demand_ok:
+                reasons.append(health_demand_msg)
+            if not health_coords_ok:
+                reasons.append(health_coords_msg)
+            if not health_existing_coords_ok:
+                reasons.append(f"Existing Facilities: {health_existing_coords_msg}")
+            st.caption("⚠️ " + " · ".join(reasons))
+
+        if st.button("📡 Run Current Network Health Check", width="stretch", disabled=not health_ready):
+            hc_demand_df = st.session_state.demand_df.copy()
+            hc_demand_df["demand_value"] = pd.to_numeric(hc_demand_df["demand_value"], errors="coerce")
+            hc_existing_df = st.session_state.existing_df.copy()
+            if len(hc_existing_df) > 0 and "facility_name" not in hc_existing_df.columns:
+                hc_existing_df["facility_name"] = hc_existing_df.get("facility_id", "Existing DC")
+
+            health_summary = compute_current_network_health(hc_demand_df, hc_existing_df, service_radius_km)
+
+            if len(hc_existing_df) > 0:
+                hc_epsg = estimate_utm_epsg(hc_demand_df["lon"].mean(), hc_demand_df["lat"].mean())
+                hc_assigned_df = assign_customers_to_facilities(hc_demand_df, hc_existing_df, hc_epsg,
+                                                                  service_radius_km=service_radius_km)
+            else:
+                hc_assigned_df = hc_demand_df.copy()
+                hc_assigned_df["assigned_facility_name"] = "Unserved (no existing facilities)"
+                hc_assigned_df["distance_to_facility_km"] = None
+
+            st.session_state.scenarios["Current Network (Baseline)"] = {
+                "products_df": st.session_state.products_df.copy(),
+                "demand_df": hc_demand_df,
+                "existing_df": hc_existing_df,
+                "model_uom": active_uom,
+                "include_existing": True,
+                "service_time_value": service_time_value,
+                "service_time_unit": service_time_unit,
+                "miles_per_day": miles_per_day,
+                "service_radius_km": service_radius_km,
+                "opt_mode": "num_sites",
+                "num_sites": 0,
+                "target_pct": None,
+                "max_sites_cap": None,
+                "is_baseline": True,
+                "summary": health_summary,
+                "selected_df": pd.DataFrame(),
+                "run_demand_df": hc_assigned_df,
+            }
+            st.session_state.baseline_scenario = "Current Network (Baseline)"
+            st.session_state["_health_check_result"] = health_summary
+            st.rerun()
+
+        if "_health_check_result" in st.session_state:
+            h = st.session_state["_health_check_result"]
+            st.success("✅ Saved as **'Current Network (Baseline)'** — every scenario you save from here will be "
+                       "compared against this in Compare Scenarios.")
+            hc1, hc2, hc3 = st.columns(3)
+            hc1.metric("Current coverage", f"{h['final_coverage_pct']}%")
+            hc2.metric("Unserved demand", f"{h['unserved_demand_pct']}%",
+                       help="Demand today that's beyond every current facility's service radius.")
+            hc_wavg = h.get("weighted_avg_distance_km")
+            if hc_wavg is not None:
+                hc3.metric("Last-mile avg distance", f"{hc_wavg*0.621371:.0f} mi ({hc_wavg:.0f} km)")
+            else:
+                hc3.metric("Last-mile avg distance", "—")
+
     # ---------- Validation summary before Run ----------
     coords_d_ok, coords_d_msg = coordinates_ready(st.session_state.demand_df)
     coords_e_ok, coords_e_msg = (True, "") if not st.session_state.include_existing else coordinates_ready(st.session_state.existing_df)
@@ -1125,22 +1250,26 @@ elif st.session_state.view == "compare":
         cc1, cc2 = st.columns(2)
         with cc1:
             st.markdown("**Final coverage % by scenario**")
-            st.bar_chart(comp_df[["Final coverage %"]])
+            st.plotly_chart(build_thin_bar_chart(comp_df, "Final coverage %",
+                             st.session_state.baseline_scenario, "%"), width="stretch")
         with cc2:
             st.markdown("**Weighted avg service distance (mi) by scenario**")
-            st.bar_chart(comp_df[["Weighted avg distance (mi)"]])
+            st.plotly_chart(build_thin_bar_chart(comp_df, "Weighted avg distance (mi)",
+                             st.session_state.baseline_scenario, " mi"), width="stretch")
 
         cc3, cc4 = st.columns(2)
         with cc3:
             st.markdown("**Sites opened by scenario**")
-            st.bar_chart(comp_df[["Sites opened"]])
+            st.plotly_chart(build_thin_bar_chart(comp_df, "Sites opened",
+                             st.session_state.baseline_scenario), width="stretch")
         with cc4:
             if st.session_state.baseline_scenario and st.session_state.baseline_scenario in runnable:
                 st.markdown(f"**vs. baseline ({st.session_state.baseline_scenario})**")
                 base_cov = comp_df.loc[st.session_state.baseline_scenario, "Final coverage %"]
                 delta_df = (comp_df[["Final coverage %"]] - base_cov).rename(
                     columns={"Final coverage %": "Coverage % vs baseline"})
-                st.bar_chart(delta_df)
+                st.plotly_chart(build_thin_bar_chart(delta_df, "Coverage % vs baseline",
+                                 st.session_state.baseline_scenario, " pts"), width="stretch")
             else:
                 st.caption("Mark a scenario as baseline (when saving) to see delta comparisons here.")
 
@@ -1582,11 +1711,14 @@ elif st.session_state.view == "results":
             comp_df = st.session_state["_last_comparison_df"]
             intent = st.session_state.get("_last_comparison_intent", "summary_table")
             if intent == "coverage_comparison":
-                st.bar_chart(comp_df[["Final coverage %"]])
+                st.plotly_chart(build_thin_bar_chart(comp_df, "Final coverage %",
+                                 st.session_state.baseline_scenario, "%"), width="stretch")
             elif intent == "distance_comparison":
-                st.bar_chart(comp_df[["Weighted avg distance (mi)"]])
+                st.plotly_chart(build_thin_bar_chart(comp_df, "Weighted avg distance (mi)",
+                                 st.session_state.baseline_scenario, " mi"), width="stretch")
             elif intent == "sites_comparison":
-                st.bar_chart(comp_df[["Sites opened"]])
+                st.plotly_chart(build_thin_bar_chart(comp_df, "Sites opened",
+                                 st.session_state.baseline_scenario), width="stretch")
             else:
                 st.dataframe(comp_df, width="stretch")
 
