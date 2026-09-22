@@ -274,20 +274,18 @@ def _step_indicator(current: str):
                     st.rerun()
 
 
-def build_network_map(run_demand_df, run_existing_df, selected_df, run_service_radius_km, run_uom, show_lines=True,
-                       origins_df=None):
+def build_network_map(run_demand_df, run_existing_df, selected_df, run_service_radius_km, run_uom, show_lines=True):
     """Build the folium network map — demand bubbles, existing facilities,
-    new-site triangles, optional existing origins (factories/suppliers), and
-    optional customer-to-DC assignment lines. Shared by both the Results
-    view and the Compare Scenarios view so both show the exact same map
-    rendering, not two divergent copies."""
+    new-site triangles, and optional customer-to-DC assignment lines.
+    Shared by both the Results view and the Compare Scenarios view so both
+    show the exact same map rendering, not two divergent copies."""
     center_lat, center_lon = run_demand_df["lat"].mean(), run_demand_df["lon"].mean()
     m = folium.Map(location=[center_lat, center_lon], tiles="OpenStreetMap")
 
     # Fit to the full extent of every point on the map (demand + existing +
-    # new sites + origins) instead of a fixed zoom level — a fixed zoom that
-    # looks right for one city zooms in far too tight for data spread across
-    # a whole country, cropping out most of the network.
+    # new sites) instead of a fixed zoom level — a fixed zoom that looks
+    # right for one city zooms in far too tight for data spread across a
+    # whole country, cropping out most of the network.
     all_lats, all_lons = list(run_demand_df["lat"]), list(run_demand_df["lon"])
     if run_existing_df is not None and len(run_existing_df) > 0:
         all_lats += list(run_existing_df["lat"])
@@ -295,9 +293,6 @@ def build_network_map(run_demand_df, run_existing_df, selected_df, run_service_r
     if selected_df is not None and len(selected_df) > 0:
         all_lats += list(selected_df["lat"])
         all_lons += list(selected_df["lon"])
-    if origins_df is not None and len(origins_df) > 0:
-        all_lats += list(origins_df["lat"])
-        all_lons += list(origins_df["lon"])
     if all_lats:
         m.fit_bounds([[min(all_lats), min(all_lons)], [max(all_lats), max(all_lons)]])
 
@@ -367,16 +362,6 @@ def build_network_map(run_demand_df, run_existing_df, selected_df, run_service_r
             color="#F5C518", fill=False, weight=2,
         ).add_to(new_layer)
     new_layer.add_to(m)
-
-    if origins_df is not None and len(origins_df) > 0:
-        origins_layer = folium.FeatureGroup(name="Existing origins (factories/suppliers)")
-        for _, row in origins_df.iterrows():
-            folium.Marker(
-                [row["lat"], row["lon"]],
-                icon=folium.Icon(color="purple", icon="industry", prefix="fa"),
-                popup=f"{row.get('origin_name', row.get('origin_id', 'Origin'))} ({row.get('origin_type', '')})",
-            ).add_to(origins_layer)
-        origins_layer.add_to(m)
 
     folium.LayerControl(collapsed=False).add_to(m)
     return m
@@ -459,9 +444,8 @@ def build_scenario_recommendation(selected_df, weights=None) -> list:
 
 # ---------- Empty-table schemas (no forced sample data) ----------
 EMPTY_PRODUCTS = pd.DataFrame(columns=["product_id", "product_name"])
-EMPTY_DEMAND = pd.DataFrame(columns=["city", "country", "company_code", "product_id", "demand_value", "lat", "lon"])
+EMPTY_DEMAND = pd.DataFrame(columns=["city", "country", "company_code", "product_id", "current_origin", "demand_value", "lat", "lon"])
 EMPTY_EXISTING = pd.DataFrame(columns=["facility_id", "facility_name", "city", "country", "lat", "lon"])
-EMPTY_ORIGINS = pd.DataFrame(columns=["origin_id", "origin_name", "origin_type", "city", "country", "lat", "lon"])
 
 UOM_OPTIONS = ["Orders", "Quantity (units)", "Weight (kg)", "Weight (lbs)",
                "Volume (m3)", "Volume (ft3)", "Pallets", "Containers", "Other (specify below)"]
@@ -472,7 +456,6 @@ defaults = {
     "demand_df": EMPTY_DEMAND.copy(),
     "products_df": EMPTY_PRODUCTS.copy(),
     "existing_df": EMPTY_EXISTING.copy(),
-    "origins_df": EMPTY_ORIGINS.copy(),
     "include_existing": True,
     "model_uom": "Orders",
     "model_uom_custom": "",
@@ -691,6 +674,7 @@ def _sample_demand():
     ]
     product_ids = ["P001", "P002", "P003"]
     company_codes = ["CC-100", "CC-200"]
+    origins = ["Chennai Plant", "Bengaluru Supplier"]
     rows, rid = [], 1
     for clat, clon in cluster_centers:
         lats = rng.normal(clat, 0.04, 8)
@@ -701,6 +685,7 @@ def _sample_demand():
                 "city": "Chennai", "country": "India",
                 "company_code": company_codes[rid % len(company_codes)],
                 "product_id": product_ids[rid % len(product_ids)],
+                "current_origin": origins[rid % len(origins)],
                 "demand_value": round(float(vol), 1),
                 "lat": round(float(lat), 5), "lon": round(float(lon), 5),
             })
@@ -898,7 +883,6 @@ if st.session_state.view == "input":
                     "summary": st.session_state.get("opt_summary"),
                     "selected_df": st.session_state.get("selected_df"),
                     "run_demand_df": st.session_state.get("run_demand_df"),
-                    "origins_df": st.session_state.origins_df.copy(),
                 }
                 st.session_state.scenarios[scenario_name.strip()] = snapshot
                 if is_baseline_checkbox:
@@ -1021,7 +1005,9 @@ if st.session_state.view == "input":
     with st.container(border=True):
         st.markdown('<div class="section-title">📍 2. Customer Demand</div>', unsafe_allow_html=True)
         st.markdown(f'<div class="section-sub">One row per customer / city. demand_value is measured in '
-                     f'<b>{active_uom}</b>. Required table.</div>', unsafe_allow_html=True)
+                     f'<b>{active_uom}</b>. Required table. <b>current_origin</b> is optional — where this demand '
+                     f'is served from today (factory, supplier, etc.), used for the Current Network health check '
+                     f'below.</div>', unsafe_allow_html=True)
         d_col1, d_col2 = st.columns([3, 1])
         with d_col1:
             demand_upload = st.file_uploader("Upload customer demand CSV", type=["csv"], key="demand_upload",
@@ -1112,52 +1098,6 @@ if st.session_state.view == "input":
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             key="export_existing")
 
-    with st.container(border=True):
-        st.markdown('<div class="section-title">🏭 4. Existing Origins (Supply Sources)</div>', unsafe_allow_html=True)
-        st.markdown('<div class="section-sub">Where your product currently originates from today — factories, '
-                     'suppliers, ports. Optional — shown on the map and in the Current Network health check below '
-                     'for a fuller picture of your network. Not yet used in the site-selection math itself; that\'s '
-                     'what the upcoming Product Flow Optimization module will build on.</div>', unsafe_allow_html=True)
-        o_col1, o_col2 = st.columns([3, 1])
-        with o_col1:
-            origins_upload = st.file_uploader("Upload existing origins CSV", type=["csv"], key="origins_upload",
-                                                label_visibility="collapsed")
-        with o_col2:
-            if st.button("Load sample", key="load_sample_origins", width="stretch"):
-                st.session_state.origins_df = pd.DataFrame({
-                    "origin_id": ["OR-001"], "origin_name": ["Main Factory"], "origin_type": ["Factory"],
-                    "city": ["Chennai"], "country": ["India"], "lat": [13.05], "lon": [80.20],
-                })
-                st.rerun()
-
-        if origins_upload is not None and st.session_state.get("_origins_upload_id") != origins_upload.file_id:
-            st.session_state.origins_df = pd.read_csv(origins_upload)
-            st.session_state["_origins_upload_id"] = origins_upload.file_id
-
-        st.session_state.origins_df = st.data_editor(
-            st.session_state.origins_df, num_rows="dynamic", width="stretch", key="origins_editor",
-            column_config={
-                "lat": st.column_config.NumberColumn("lat", min_value=-90.0, max_value=90.0, format="%.5f"),
-                "lon": st.column_config.NumberColumn("lon", min_value=-180.0, max_value=180.0, format="%.5f"),
-            },
-        )
-        st.download_button("⬇ Export to Excel", df_to_excel_bytes(st.session_state.origins_df, "Existing Origins"),
-                            file_name="existing_origins.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            key="export_origins")
-
-        origins_needs_geo = needs_geocoding(st.session_state.origins_df)
-        if origins_needs_geo:
-            st.info("📍 Existing Origins has rows missing lat/lon coordinates.")
-            if st.button("🌍 Geocode missing locations (Existing Origins)", key="geocode_origins_btn"):
-                with st.spinner("Looking up coordinates from City + Country..."):
-                    st.session_state.origins_df, failed_o = geocode_locations(st.session_state.origins_df)
-                if len(failed_o) == 0:
-                    st.success("Geocoding complete — all rows resolved.")
-                else:
-                    st.warning(f"Geocoding complete, but {len(failed_o)} row(s) could not be resolved.")
-                st.rerun()
-
     # ---------- Geocoding (Existing Facilities) ----------
     existing_needs_geo = st.session_state.include_existing and needs_geocoding(st.session_state.existing_df)
 
@@ -1231,7 +1171,6 @@ if st.session_state.view == "input":
                 "summary": health_summary,
                 "selected_df": pd.DataFrame(),
                 "run_demand_df": hc_assigned_df,
-                "origins_df": st.session_state.origins_df.copy(),
             }
             st.session_state.baseline_scenario = "Current Network (Baseline)"
             st.session_state["_health_check_result"] = health_summary
@@ -1250,7 +1189,10 @@ if st.session_state.view == "input":
                 hc3.metric("Last-mile avg distance", f"{hc_wavg*0.621371:.0f} mi ({hc_wavg:.0f} km)")
             else:
                 hc3.metric("Last-mile avg distance", "—")
-            hc4.metric("Existing origins on file", len(st.session_state.origins_df))
+            n_origins = st.session_state.demand_df["current_origin"].dropna().replace("", pd.NA).dropna().nunique() \
+                if "current_origin" in st.session_state.demand_df.columns else 0
+            hc4.metric("Distinct current origins", n_origins,
+                       help="Unique values in the 'current_origin' column of your Customer Demand table.")
 
     # ---------- Validation summary before Run ----------
     coords_d_ok, coords_d_msg = coordinates_ready(st.session_state.demand_df)
@@ -1366,7 +1308,6 @@ if st.session_state.view == "input":
             "summary": summary,
             "selected_df": selected_df,
             "run_demand_df": assigned_demand_df,
-            "origins_df": st.session_state.origins_df.copy(),
             "auto": True,
         }
         st.session_state.auto_run_order.append(auto_name)
@@ -1484,9 +1425,8 @@ elif st.session_state.view == "compare":
 
                 st.markdown("**Map**")
                 if sc_demand_df is not None and sel_df is not None and sc_radius_km is not None:
-                    sc_origins_df = snap.get("origins_df")
                     sc_map = build_network_map(sc_demand_df, sc_existing_df, sel_df, sc_radius_km, sc_uom,
-                                                show_lines=len(sc_demand_df) <= 300, origins_df=sc_origins_df)
+                                                show_lines=len(sc_demand_df) <= 300)
                     st_folium(sc_map, width=None, height=420, returned_objects=[], key=f"map_{name}")
                 else:
                     st.caption("Map data not available for this scenario.")
@@ -1592,7 +1532,6 @@ elif st.session_state.view == "results":
                     "summary": summary,
                     "selected_df": selected_df,
                     "run_demand_df": run_demand_df,
-                    "origins_df": st.session_state.origins_df.copy(),
                 }
                 st.session_state.scenarios[results_scenario_name.strip()] = snapshot
                 if results_is_baseline:
@@ -1643,8 +1582,7 @@ elif st.session_state.view == "results":
         show_lines = st.checkbox("Show customer → DC assignment lines", value=len(run_demand_df) <= 300,
                                   help="Auto-disabled by default for very large demand tables to keep the map responsive.")
 
-        m = build_network_map(run_demand_df, run_existing_df, selected_df, run_service_radius_km, run_uom, show_lines,
-                               origins_df=st.session_state.origins_df)
+        m = build_network_map(run_demand_df, run_existing_df, selected_df, run_service_radius_km, run_uom, show_lines)
         st_folium(m, width=None, height=560, returned_objects=[])
 
     with col2:
