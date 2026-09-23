@@ -99,11 +99,27 @@ def needs_geocoding(df: pd.DataFrame) -> bool:
 
 
 def geocode_locations(df: pd.DataFrame, city_col: str = "city", country_col: str = "country",
-                       lat_col: str = "lat", lon_col: str = "lon") -> tuple[pd.DataFrame, list]:
+                       lat_col: str = "lat", lon_col: str = "lon",
+                       progress_callback=None) -> tuple[pd.DataFrame, list]:
     """Fill in missing lat/lon by geocoding city + country with OpenStreetMap's
     Nominatim service (free, no API key, rate-limited to be a polite citizen
-    of a shared public service). Returns the updated dataframe and a list of
-    row indices that could not be geocoded."""
+    of a shared public service — 1 request/second is the hard floor per
+    lookup, by Nominatim's own usage policy, so this can't go faster than
+    that per unique location).
+
+    Speed optimization: geocodes each UNIQUE (city, country) pair only ONCE,
+    then applies the result to every matching row — for real-world data with
+    many rows sharing a city (the common case), this cuts total network
+    calls (and thus total wait time) dramatically versus geocoding every
+    row independently.
+
+    `progress_callback`, if given, is called as
+    progress_callback(done, total, elapsed_seconds) after each unique lookup,
+    so the caller can render a live progress bar + elapsed-time indicator.
+
+    Returns the updated dataframe and a list of row indices that could not
+    be geocoded."""
+    import time as _time
     from geopy.geocoders import Nominatim
     from geopy.extra.rate_limiter import RateLimiter
 
@@ -116,29 +132,38 @@ def geocode_locations(df: pd.DataFrame, city_col: str = "city", country_col: str
     geolocator = Nominatim(user_agent="supply_chain_design_by_am", timeout=5)
     geocode = RateLimiter(geolocator.geocode, min_delay_seconds=1, max_retries=1, error_wait_seconds=1.0)
 
-    failed_rows = []
-    for idx, row in df.iterrows():
-        lat_missing = pd.isna(row.get(lat_col))
-        lon_missing = pd.isna(row.get(lon_col))
-        if not (lat_missing or lon_missing):
-            continue
+    needs_geo_mask = df[lat_col].isna() | df[lon_col].isna()
+    rows_needing = df[needs_geo_mask]
 
+    # Group by the exact query string so identical city/country pairs share
+    # a single lookup, regardless of which rows they belong to.
+    queries_to_rows: dict[str, list] = {}
+    failed_rows = []
+    for idx, row in rows_needing.iterrows():
         city = str(row.get(city_col, "") or "").strip()
         country = str(row.get(country_col, "") or "").strip()
         query = ", ".join(part for part in [city, country] if part)
         if not query:
             failed_rows.append(idx)
             continue
+        queries_to_rows.setdefault(query, []).append(idx)
 
+    unique_queries = list(queries_to_rows.keys())
+    start_time = _time.time()
+    for i, query in enumerate(unique_queries):
         try:
             location = geocode(query)
             if location:
-                df.at[idx, lat_col] = location.latitude
-                df.at[idx, lon_col] = location.longitude
+                for idx in queries_to_rows[query]:
+                    df.at[idx, lat_col] = location.latitude
+                    df.at[idx, lon_col] = location.longitude
             else:
-                failed_rows.append(idx)
+                failed_rows.extend(queries_to_rows[query])
         except Exception:
-            failed_rows.append(idx)
+            failed_rows.extend(queries_to_rows[query])
+
+        if progress_callback is not None:
+            progress_callback(i + 1, len(unique_queries), _time.time() - start_time)
 
     return df, failed_rows
 
@@ -302,9 +327,17 @@ def compute_current_network_health(demand_df: pd.DataFrame, existing_df: pd.Data
     covered_demand = demand_vals[covered].sum()
     unserved_demand = demand_vals[~covered].sum()
 
-    if existing_df is not None and len(existing_df) > 0 and covered.any():
-        served_demand_df = demand_df[covered].reset_index(drop=True)
-        weighted_avg_distance_km = compute_weighted_avg_distance_km(served_demand_df, existing_df, epsg)
+    # Weighted average distance for a CURRENT-NETWORK health check is
+    # deliberately computed over ALL demand — not just the subset within
+    # the configured service radius. This is a diagnostic ("how far, on
+    # average, is my demand from its nearest existing facility today?"),
+    # not a constrained optimization — silently dropping unserved demand
+    # from the average would hide exactly the gap this check exists to
+    # surface, and would make the number not reflect reality. This is the
+    # genuine Σ(distance from nearest current facility × demand) / Σ(demand)
+    # across every demand point.
+    if existing_df is not None and len(existing_df) > 0:
+        weighted_avg_distance_km = compute_weighted_avg_distance_km(demand_df, existing_df, epsg)
     else:
         weighted_avg_distance_km = None
 
@@ -493,18 +526,75 @@ FALLBACK_STATE_MAJOR_CITY = {
     "Wisconsin": "Milwaukee, WI", "Wyoming": "Cheyenne, WY",
 }
 
+# Non-US fallback: the dominant logistics/trade hub for each major country,
+# used when a recommended site falls outside the US (where the two dicts
+# above have no coverage at all). Real, well-established hubs — major sea
+# ports, free trade zones, or primary distribution/industrial centers —
+# not live web research, but a genuine geography-based knowledge base so
+# recommendations are never just silent for non-US locations.
+COUNTRY_LOGISTICS_HUBS = {
+    "India": {"city": "Mumbai / Navi Mumbai (JNPT), India", "rationale": "Jawaharlal Nehru Port (JNPT) handles "
+              "over half of India's containerized cargo; strong road/rail/air connectivity to the rest of the country."},
+    "United Kingdom": {"city": "Felixstowe / London Gateway, UK", "rationale": "Felixstowe is the UK's busiest "
+                        "container port; London Gateway offers a modern deep-water alternative with direct motorway access."},
+    "Germany": {"city": "Hamburg / Duisburg, Germany", "rationale": "Hamburg is Germany's largest port and a "
+                "major EU gateway; Duisburg is the world's largest inland port, key for European rail freight."},
+    "Netherlands": {"city": "Rotterdam, Netherlands", "rationale": "Europe's largest seaport, with extensive "
+                    "rail/barge/road links deep into the EU — the primary gateway for continental distribution."},
+    "France": {"city": "Le Havre / Paris region, France", "rationale": "Le Havre is France's leading container "
+               "port; the Paris region offers the largest consumer market and logistics real estate concentration."},
+    "China": {"city": "Shanghai / Shenzhen, China", "rationale": "Shanghai is the world's busiest container port; "
+              "Shenzhen anchors the Pearl River Delta manufacturing and export corridor."},
+    "Japan": {"city": "Tokyo / Yokohama, Japan", "rationale": "The Tokyo-Yokohama port complex is Japan's largest, "
+              "with dense rail and highway links across the Kanto region."},
+    "South Korea": {"city": "Busan, South Korea", "rationale": "Busan is one of the world's top-10 container "
+                    "ports and South Korea's primary trade gateway."},
+    "Singapore": {"city": "Singapore", "rationale": "One of the world's busiest transshipment hubs, with "
+                  "world-class port infrastructure and free-trade-zone advantages."},
+    "United Arab Emirates": {"city": "Dubai (Jebel Ali), UAE", "rationale": "Jebel Ali is the largest man-made "
+                              "harbor and a major transshipment hub for the Middle East/Africa/South Asia corridor."},
+    "Australia": {"city": "Melbourne / Sydney, Australia", "rationale": "Melbourne is Australia's busiest "
+                  "container port; combined with Sydney, these two cover most of the domestic population."},
+    "Canada": {"city": "Vancouver / Toronto, Canada", "rationale": "Vancouver is Canada's largest port (key "
+               "Pacific gateway); Toronto anchors the largest domestic consumer market and rail network."},
+    "Mexico": {"city": "Manzanillo / Mexico City, Mexico", "rationale": "Manzanillo is Mexico's busiest Pacific "
+               "port; Mexico City region offers the largest population and cross-border rail/road access to the US."},
+    "Brazil": {"city": "Santos, Brazil", "rationale": "Latin America's busiest port, serving the São Paulo "
+               "industrial region — the dominant gateway for Brazilian trade."},
+    "South Africa": {"city": "Durban, South Africa", "rationale": "Sub-Saharan Africa's busiest container port "
+                      "and the primary gateway for southern African trade."},
+    "Italy": {"city": "Genoa / Milan, Italy", "rationale": "Genoa is Italy's leading seaport; Milan anchors the "
+              "country's largest industrial and consumer market in the north."},
+    "Spain": {"city": "Valencia / Algeciras, Spain", "rationale": "Valencia is Spain's busiest container port; "
+              "Algeciras is a major Mediterranean transshipment hub near the Strait of Gibraltar."},
+    "Vietnam": {"city": "Ho Chi Minh City, Vietnam", "rationale": "Vietnam's largest commercial hub and the "
+                "center of its rapidly growing manufacturing/export sector."},
+    "Indonesia": {"city": "Jakarta (Tanjung Priok), Indonesia", "rationale": "Indonesia's busiest port, serving "
+                  "the country's largest population center and industrial base."},
+    "Thailand": {"city": "Bangkok / Laem Chabang, Thailand", "rationale": "Laem Chabang is Thailand's main deep-sea "
+                 "port; Bangkok anchors the country's largest consumer and manufacturing base."},
+    "Turkey": {"city": "Istanbul, Turkey", "rationale": "Turkey's largest city and trade hub, straddling Europe "
+               "and Asia with major port and air cargo infrastructure."},
+    "Saudi Arabia": {"city": "Jeddah, Saudi Arabia", "rationale": "Saudi Arabia's primary Red Sea port and "
+                      "commercial gateway for the western region."},
+    "Poland": {"city": "Warsaw / Gdańsk, Poland", "rationale": "Gdańsk is Poland's largest Baltic port; Warsaw "
+               "anchors the country's largest logistics and distribution market."},
+}
+
 
 def suggest_best_next_location(dc_name: str, scores_row: pd.Series, weights: dict,
                                 cand_df: pd.DataFrame, selected_df: pd.DataFrame,
-                                service_radius_km: float, state: str | None = None) -> str:
+                                service_radius_km: float, state: str | None = None,
+                                country: str | None = None) -> str:
     """For a site scoring below the quality bar, produce a concrete,
     data-grounded suggestion — never a vague "consider alternatives": lists
     EVERY criterion scoring below 5 (not just the single weakest one), and
-    always recommends a real named city (a specialized logistics hub where
-    known, else the state's best-known major metro), with a holistic
-    explanation of why it's the better fit across all the flagged gaps —
-    plus, for a rental-cost weakness, checks the run's own candidate pool
-    for a genuinely cheaper nearby alternative."""
+    always recommends a real named city (a specialized US-state logistics
+    hub where known, else the US state's best-known major metro, else —
+    for non-US locations — the country's dominant logistics/trade hub),
+    with a holistic explanation of why it's the better fit across all the
+    flagged gaps — plus, for a rental-cost weakness, checks the run's own
+    candidate pool for a genuinely cheaper nearby alternative."""
     criterion_labels = {c["key"]: c["label"] for c in DEFAULT_SCORING_CRITERIA}
     crit_scores = {k: scores_row.get(k, 5) for k in weights if k in criterion_labels}
     if not crit_scores:
@@ -536,6 +626,10 @@ def suggest_best_next_location(dc_name: str, scores_row: pd.Series, weights: dic
             FALLBACK_STATE_MAJOR_CITY[state].split(",")[0].split(" / ")[0].strip().lower() not in dc_name.lower():
         rec_city = FALLBACK_STATE_MAJOR_CITY[state]
         rec_rationale = "the state's largest metro, generally offering more developed transport and logistics infrastructure"
+    elif country and country in COUNTRY_LOGISTICS_HUBS:
+        country_hub = COUNTRY_LOGISTICS_HUBS[country]
+        if country_hub["city"].split(",")[0].split(" / ")[0].strip().lower() not in dc_name.lower():
+            rec_city, rec_rationale = country_hub["city"], country_hub["rationale"]
 
     if rec_city:
         rationale_clean = rec_rationale.rstrip(".")
