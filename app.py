@@ -367,6 +367,15 @@ def build_network_map(run_demand_df, run_existing_df, selected_df, run_service_r
     return m
 
 
+def read_uploaded_table(uploaded_file) -> pd.DataFrame:
+    """Read an uploaded table as CSV or Excel, based on its file extension —
+    lets every table's uploader accept both formats interchangeably."""
+    name = uploaded_file.name.lower()
+    if name.endswith(".xlsx") or name.endswith(".xls"):
+        return pd.read_excel(uploaded_file)
+    return pd.read_csv(uploaded_file)
+
+
 def df_to_excel_bytes(df: pd.DataFrame, sheet_name: str = "Sheet1") -> bytes:
     """Export a dataframe to Excel (.xlsx) bytes, for the per-table export
     buttons — lets the user edit in Excel and re-upload via the CSV/Excel
@@ -449,6 +458,20 @@ EMPTY_EXISTING = pd.DataFrame(columns=["facility_id", "facility_name", "city", "
 
 UOM_OPTIONS = ["Orders", "Quantity (units)", "Weight (kg)", "Weight (lbs)",
                "Volume (m3)", "Volume (ft3)", "Pallets", "Containers", "Other (specify below)"]
+
+# Built ONCE at import time, not re-created on every script rerun. This
+# matters: st.data_editor treats a freshly-constructed column_config as a
+# potential schema change on every rerun, which can reset the editor's
+# in-progress edit buffer — the likely cause of needing to type a value
+# twice for it to stick. Keeping these objects stable across reruns fixes it.
+LAT_LON_COLUMN_CONFIG = {
+    "lat": st.column_config.NumberColumn("lat", min_value=-90.0, max_value=90.0, format="%.5f"),
+    "lon": st.column_config.NumberColumn("lon", min_value=-180.0, max_value=180.0, format="%.5f"),
+}
+DEMAND_BASE_COLUMN_CONFIG = {
+    "demand_value": st.column_config.NumberColumn("demand_value", min_value=0.0, format="%.1f"),
+    **LAT_LON_COLUMN_CONFIG,
+}
 
 # ---------- Session state ----------
 defaults = {
@@ -979,7 +1002,7 @@ if st.session_state.view == "input":
                      f'(set in the sidebar). Required table.</div>', unsafe_allow_html=True)
         p_col1, p_col2 = st.columns([3, 1])
         with p_col1:
-            products_upload = st.file_uploader("Upload products CSV", type=["csv"], key="products_upload",
+            products_upload = st.file_uploader("Upload products CSV or Excel", type=["csv", "xlsx"], key="products_upload",
                                                  label_visibility="collapsed")
         with p_col2:
             if st.button("Load sample", key="load_sample_products", width="stretch"):
@@ -990,11 +1013,11 @@ if st.session_state.view == "input":
                 st.rerun()
 
         if products_upload is not None and st.session_state.get("_products_upload_id") != products_upload.file_id:
-            st.session_state.products_df = pd.read_csv(products_upload)
+            st.session_state.products_df = read_uploaded_table(products_upload)
             st.session_state["_products_upload_id"] = products_upload.file_id
 
         st.session_state.products_df = st.data_editor(
-            st.session_state.products_df, num_rows="dynamic", width="stretch", key="products_editor"
+            st.session_state.products_df, num_rows="dynamic", width="stretch"
         )
         valid_p, msg_p = validate_products_df(st.session_state.products_df)
         st.download_button("⬇ Export to Excel", df_to_excel_bytes(st.session_state.products_df, "Products"),
@@ -1010,7 +1033,7 @@ if st.session_state.view == "input":
                      f'below.</div>', unsafe_allow_html=True)
         d_col1, d_col2 = st.columns([3, 1])
         with d_col1:
-            demand_upload = st.file_uploader("Upload customer demand CSV", type=["csv"], key="demand_upload",
+            demand_upload = st.file_uploader("Upload customer demand CSV or Excel", type=["csv", "xlsx"], key="demand_upload",
                                                label_visibility="collapsed")
         with d_col2:
             if st.button("Load sample", key="load_sample_demand", width="stretch"):
@@ -1023,7 +1046,7 @@ if st.session_state.view == "input":
                 st.rerun()
 
         if demand_upload is not None and st.session_state.get("_demand_upload_id") != demand_upload.file_id:
-            st.session_state.demand_df = pd.read_csv(demand_upload)
+            st.session_state.demand_df = read_uploaded_table(demand_upload)
             st.session_state["_demand_upload_id"] = demand_upload.file_id
 
         demand_needs_geo_now = needs_geocoding(st.session_state.demand_df)
@@ -1031,32 +1054,45 @@ if st.session_state.view == "input":
         with geo_btn_col:
             if st.button("🌍 Geocode missing locations", key="geocode_demand_btn",
                          disabled=not demand_needs_geo_now, width="stretch"):
-                with st.spinner("Looking up coordinates from City + Country..."):
-                    st.session_state.demand_df, failed_d = geocode_locations(st.session_state.demand_df)
+                progress_ph = st.empty()
+                status_ph = st.empty()
+
+                def _demand_geo_progress(done, total, elapsed):
+                    progress_ph.progress(done / total if total > 0 else 1.0)
+                    status_ph.caption(f"🌍 Geocoding {done}/{total} unique locations... ({elapsed:.1f}s elapsed)")
+
+                start_t = time.time()
+                st.session_state.demand_df, failed_d = geocode_locations(
+                    st.session_state.demand_df, progress_callback=_demand_geo_progress)
+                total_elapsed = time.time() - start_t
+                progress_ph.empty()
+                status_ph.empty()
                 if len(failed_d) == 0:
-                    st.success("Geocoding complete — all rows resolved.")
+                    st.success(f"Geocoding complete in {total_elapsed:.1f}s — all rows resolved.")
                 else:
-                    st.warning(f"Geocoding complete, but {len(failed_d)} row(s) could not be resolved.")
+                    st.warning(f"Geocoding complete in {total_elapsed:.1f}s, but {len(failed_d)} row(s) "
+                               f"could not be resolved.")
                 st.rerun()
         with geo_msg_col:
             if demand_needs_geo_now:
-                st.caption("Some rows are missing lat/lon — fills them in from City + Country.")
+                st.caption("Some rows are missing lat/lon — fills them in from City + Country. Rows sharing the "
+                           "same city/country are looked up once and reused, so repeats don't slow this down.")
             else:
                 st.caption("All rows already have coordinates.")
 
-        product_options = st.session_state.products_df["product_id"].dropna().unique().tolist() \
+        computed_product_options = st.session_state.products_df["product_id"].dropna().unique().tolist() \
             if "product_id" in st.session_state.products_df.columns else []
-        column_config = {
-            "demand_value": st.column_config.NumberColumn("demand_value", min_value=0.0, format="%.1f"),
-            "lat": st.column_config.NumberColumn("lat", min_value=-90.0, max_value=90.0, format="%.5f"),
-            "lon": st.column_config.NumberColumn("lon", min_value=-180.0, max_value=180.0, format="%.5f"),
-        }
+        if st.session_state.get("_cached_product_options") != computed_product_options:
+            st.session_state["_cached_product_options"] = computed_product_options
+        product_options = st.session_state["_cached_product_options"]
+
+        column_config = dict(DEMAND_BASE_COLUMN_CONFIG)
         if product_options:
             column_config["product_id"] = st.column_config.SelectboxColumn("product_id", options=product_options)
 
         st.session_state.demand_df = st.data_editor(
             st.session_state.demand_df, num_rows="dynamic", width="stretch",
-            key="demand_editor", column_config=column_config,
+            column_config=column_config,
         )
         valid_d, msg_d = validate_demand_df(st.session_state.demand_df)
         st.download_button("⬇ Export to Excel", df_to_excel_bytes(st.session_state.demand_df, "Demand"),
@@ -1071,7 +1107,7 @@ if st.session_state.view == "input":
                      f'this run. Optional table.</div>', unsafe_allow_html=True)
         e_col1, e_col2 = st.columns([3, 1])
         with e_col1:
-            existing_upload = st.file_uploader("Upload existing facilities CSV", type=["csv"], key="existing_upload",
+            existing_upload = st.file_uploader("Upload existing facilities CSV or Excel", type=["csv", "xlsx"], key="existing_upload",
                                                  label_visibility="collapsed")
         with e_col2:
             if st.button("Load sample", key="load_sample_existing", width="stretch"):
@@ -1082,15 +1118,12 @@ if st.session_state.view == "input":
                 st.rerun()
 
         if existing_upload is not None and st.session_state.get("_existing_upload_id") != existing_upload.file_id:
-            st.session_state.existing_df = pd.read_csv(existing_upload)
+            st.session_state.existing_df = read_uploaded_table(existing_upload)
             st.session_state["_existing_upload_id"] = existing_upload.file_id
 
         st.session_state.existing_df = st.data_editor(
-            st.session_state.existing_df, num_rows="dynamic", width="stretch", key="existing_editor",
-            column_config={
-                "lat": st.column_config.NumberColumn("lat", min_value=-90.0, max_value=90.0, format="%.5f"),
-                "lon": st.column_config.NumberColumn("lon", min_value=-180.0, max_value=180.0, format="%.5f"),
-            },
+            st.session_state.existing_df, num_rows="dynamic", width="stretch",
+            column_config=LAT_LON_COLUMN_CONFIG,
         )
         valid_e, msg_e = validate_existing_df(st.session_state.existing_df)
         st.download_button("⬇ Export to Excel", df_to_excel_bytes(st.session_state.existing_df, "Existing Facilities"),
@@ -1098,19 +1131,36 @@ if st.session_state.view == "input":
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             key="export_existing")
 
-    # ---------- Geocoding (Existing Facilities) ----------
-    existing_needs_geo = st.session_state.include_existing and needs_geocoding(st.session_state.existing_df)
+        existing_needs_geo_now = needs_geocoding(st.session_state.existing_df)
+        eg_btn_col, eg_msg_col = st.columns([1, 3])
+        with eg_btn_col:
+            if st.button("🌍 Geocode missing locations", key="geocode_existing_btn",
+                         disabled=not existing_needs_geo_now, width="stretch"):
+                eg_progress_ph = st.empty()
+                eg_status_ph = st.empty()
 
-    if existing_needs_geo:
-        st.info("📍 Existing Facilities has rows missing lat/lon coordinates.")
-        if st.button("🌍 Geocode missing locations (Existing Facilities)", key="geocode_btn"):
-            with st.spinner("Looking up coordinates from City + Country..."):
-                st.session_state.existing_df, failed_e = geocode_locations(st.session_state.existing_df)
-            if len(failed_e) == 0:
-                st.success("Geocoding complete — all rows resolved.")
+                def _existing_geo_progress(done, total, elapsed):
+                    eg_progress_ph.progress(done / total if total > 0 else 1.0)
+                    eg_status_ph.caption(f"🌍 Geocoding {done}/{total} unique locations... ({elapsed:.1f}s elapsed)")
+
+                eg_start_t = time.time()
+                st.session_state.existing_df, failed_e = geocode_locations(
+                    st.session_state.existing_df, progress_callback=_existing_geo_progress)
+                eg_total_elapsed = time.time() - eg_start_t
+                eg_progress_ph.empty()
+                eg_status_ph.empty()
+                if len(failed_e) == 0:
+                    st.success(f"Geocoding complete in {eg_total_elapsed:.1f}s — all rows resolved.")
+                else:
+                    st.warning(f"Geocoding complete in {eg_total_elapsed:.1f}s, but {len(failed_e)} row(s) "
+                               f"could not be resolved.")
+                st.rerun()
+        with eg_msg_col:
+            if existing_needs_geo_now:
+                st.caption("Some rows are missing lat/lon — fills them in from City + Country. This table's "
+                           "coordinates are what drive the Current Network health check below.")
             else:
-                st.warning(f"Geocoding complete, but {len(failed_e)} row(s) could not be resolved.")
-            st.rerun()
+                st.caption("All rows already have coordinates.")
 
     st.divider()
     with st.container(border=True):
@@ -1186,9 +1236,12 @@ if st.session_state.view == "input":
                        help="Demand today that's beyond every current facility's service radius.")
             hc_wavg = h.get("weighted_avg_distance_km")
             if hc_wavg is not None:
-                hc3.metric("Last-mile avg distance", f"{hc_wavg*0.621371:.0f} mi ({hc_wavg:.0f} km)")
+                hc3.metric("True weighted avg distance", f"{hc_wavg*0.621371:.0f} mi ({hc_wavg:.0f} km)",
+                           help="Σ(distance from nearest current facility × demand) / Σ(demand), across ALL "
+                                "demand — not just what's within the service radius. This is the real current "
+                                "state, including how far your unserved demand actually is.")
             else:
-                hc3.metric("Last-mile avg distance", "—")
+                hc3.metric("True weighted avg distance", "—")
             n_origins = st.session_state.demand_df["current_origin"].dropna().replace("", pd.NA).dropna().nunique() \
                 if "current_origin" in st.session_state.demand_df.columns else 0
             hc4.metric("Distinct current origins", n_origins,
@@ -1250,6 +1303,7 @@ if st.session_state.view == "input":
                 details = reverse_geocode_details(selected_df)
                 selected_df["dc_name"] = [d["name"] for d in details]
                 selected_df["dc_state"] = [d["state"] for d in details]
+                selected_df["dc_country"] = [d["country"] for d in details]
                 selected_df["facility_name"] = "New DC – " + selected_df["dc_name"]
 
         # Customer -> nearest facility assignment
@@ -1364,6 +1418,11 @@ elif st.session_state.view == "compare":
         comp_df = pd.DataFrame(rows).set_index("Scenario")
 
         st.dataframe(comp_df, width="stretch")
+        if "Current Network (Baseline)" in runnable:
+            st.caption("ℹ️ Note: **Current Network (Baseline)**'s distance is the true average across ALL demand "
+                       "(the real current state). Optimized scenarios show distance among served demand only, "
+                       "within their service radius — so the baseline is expected to show a larger number; that "
+                       "gap is exactly what the optimization is meant to close.")
 
         cc1, cc2 = st.columns(2)
         with cc1:
@@ -1681,7 +1740,7 @@ elif st.session_state.view == "results":
                for c in DEFAULT_SCORING_CRITERIA},
         }
         st.session_state.site_scores_df = st.data_editor(
-            st.session_state.site_scores_df, width="stretch", key="scores_editor",
+            st.session_state.site_scores_df, width="stretch",
             column_config=score_column_config, hide_index=True,
         )
 
@@ -1717,14 +1776,17 @@ elif st.session_state.view == "results":
                 st.markdown('<div class="section-title">📍 First level recommendations</div>', unsafe_allow_html=True)
                 st.markdown("**⚠️ Locations below score threshold (7.0) — suggested next steps**")
                 for _, row in low_scorers.iterrows():
-                    site_state = None
+                    site_state, site_country = None, None
                     site_match = selected_df[selected_df["dc_name"] == row["dc_name"]]
-                    if len(site_match) > 0 and "dc_state" in site_match.columns:
-                        site_state = site_match.iloc[0]["dc_state"]
+                    if len(site_match) > 0:
+                        if "dc_state" in site_match.columns:
+                            site_state = site_match.iloc[0]["dc_state"]
+                        if "dc_country" in site_match.columns:
+                            site_country = site_match.iloc[0]["dc_country"]
                     suggestion = suggest_best_next_location(
                         row["dc_name"], row, weights_used,
                         st.session_state.get("run_cand_df"), selected_df, run_service_radius_km,
-                        state=site_state,
+                        state=site_state, country=site_country,
                     )
                     st.warning(suggestion)
 
